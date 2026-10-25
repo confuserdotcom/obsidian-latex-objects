@@ -573,6 +573,10 @@ const KEYS = [];
 for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"]])
   for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
     for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj, which, inner }]);
+const OBJ_KEYS = "mMebBr";
+// the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
+const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
+const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
@@ -668,16 +672,43 @@ function latexJump(cm, head, args) {
 }
 
 // ; and , repeat the last ]x / [x (, the other way), else Vim's own f / t repeat.
+const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true });
 function repeatJump(orig) {
-  return (cm, head, args, vim, inputState) => lastJump
-    ? latexJump(cm, head, { obj: lastJump.obj, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true })
-    : orig(cm, head, args, vim, inputState);
+  return (cm, head, args, vim, inputState) => lastJump ? againJump(cm, head, args) : orig(cm, head, args, vim, inputState);
 }
 // f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
+  if (stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
+}
+
+// Obsidian's own Vim (no getMotion, unlike Vim Motions) takes `in` as Vim's text object `n`
+// before the m of `inm` arrives (any full match wins over a longer partial one), and gives
+// no way to wrap ; and ,. There the keys are caught here and handed to Vim as one private
+// key mapped to the same motion, so the operator, the count and `.` all still work.
+let pending = null; // "in" / "al" … held back from Vim until the object key
+function stockKey(e, cm) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
+  if (!Vim || Vim.getMotion || !vim || vim.insertMode || e.ctrlKey || e.metaKey || e.altKey || !(cm.cm6 && cm.cm6.hasFocus)) { pending = null; return false; }
+  if (e.key.length > 1 && e.key !== "Escape") return false; // Shift on its way to M / B
+  const st = vim.inputState, buf = [].concat(st.keyBuffer || []).join("");
+  const swallow = key => { e.preventDefault(); e.stopImmediatePropagation(); st.keyBuffer = []; Vim.handleKey(cm, key, "user"); return true; };
+  if (pending) {
+    const p = pending;
+    pending = null;
+    if (OBJ_KEYS.includes(e.key)) return swallow(`<LxO-${p}${e.key}>`);
+    Vim.handleKey(cm, p[1], "user"); // not ours: give Vim back the n / l, then this key as usual
+    return false;
+  }
+  if ((buf === "i" || buf === "a") && (st.operator || vim.visualMode) && (e.key === "n" || e.key === "l")) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    pending = buf + e.key;
+    return true;
+  }
+  if ((e.key === ";" || e.key === ",") && !buf && lastJump && active.jumps && active.repeatJumps) return swallow(e.key === ";" ? "<LxRep-f>" : "<LxRep-b>");
+  return false;
 }
 
 // ─── Flash (like nvim's highlight-on-yank) ────────────────────────────────────
@@ -757,14 +788,18 @@ function dispatchChanges(cm, changes) {
 // Idempotent: drop our keys, then add them (so they never pile up). The Vim object is looked
 // up fresh each time: Vim Motions deletes it when it unloads. `opts` says which groups are on.
 const OPTS = { jumps: true, repeatJumps: true, surround: true };
+let active = OPTS; // the groups register() last turned on
 function register(opts = OPTS) {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
   if (!Vim) return;
   unregister();
+  active = opts;
   Vim.defineMotion("latexObj", latexObj);
   Vim.defineMotion("latexJump", latexJump);
-  for (const [motion, list] of [["latexObj", KEYS], ["latexJump", opts.jumps ? JUMPS : []]]) for (const [keys, args] of list) {
-    Vim.removeMapCommand && Vim.removeMapCommand(keys);
+  Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
+  const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
+  for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", repeats]]) for (const [keys, args] of list) {
+    dropKeys(Vim, keys);
     Vim.mapCommand(keys, "motion", motion, args);
   }
   const cur = Vim.getAction && Vim.getAction("surroundAction");
@@ -776,9 +811,15 @@ function register(opts = OPTS) {
     if (Vim.latexRepeatOrig) Vim.defineMotion("repeatLastCharacterSearch", repeatJump(Vim.latexRepeatOrig));
   }
 }
+// Obsidian's own Vim has no removeMapCommand; its unmap drops the first context-less entry
+// with these keys, which is what mapCommand made (so repeat until none is left).
+function dropKeys(Vim, keys) {
+  if (Vim.removeMapCommand) Vim.removeMapCommand(keys);
+  else if (Vim.unmap) for (let i = 0; i < 50 && Vim.unmap(keys); i++);
+}
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim && Vim.removeMapCommand) for (const [keys] of [...KEYS, ...JUMPS]) Vim.removeMapCommand(keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
