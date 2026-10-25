@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-latex-objects",
+  "version": "1.0.0",
+  "description": "Vim text objects, jumps and editing commands for LaTeX maths, environments and brackets in Obsidian.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "test": "node test.js && node fuzz.js 1000",
+    "fuzz": "node fuzz.js",
+    "e2e": "node e2e.mjs"
+  },
+  "author": "confuserdotcom",
+  "license": "MIT"
+}

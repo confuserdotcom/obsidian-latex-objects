@@ -1,0 +1,965 @@
+// Real Vim text objects for maths, LaTeX environments and brackets — they work with every
+// operator (d c y > gU …), in visual mode and with `.` repeat:
+//   im am   inm anm   ilm alm    maths   $…$ / $$…$$        (m = maths)
+//   iM aM   inM anM   ilM alM    display $$…$$ only (skips the $…$ on the way)
+//   ie ae   ine ane   ile ale    \begin{…} … \end{…}
+//   ib ab   inb anb   ilb alb    ( )  \left( \right)          (n = next, l = last)
+//   iB aB   inB anB   ilB alB    { }  \{ \}  \left\{ \right\}
+//   ir ar   inr anr   ilr alr    [ ]  \left[ \right]  ⟦a; b⟧ intervals
+// Every object SEEKS like mini.ai: the one around the cursor, else the CLOSEST one above or
+// below, within 50 lines. In visual mode, repeating one (vie ie ie) grows to the enclosing one.
+//   ]m [m   ]M [M   ]e [e   ]( [(   ]{ [{   jump to the next / previous maths, \begin, ( ), { } (counts, d]m …)
+//   ; ,   repeat the last of those jumps (, the other way) until an f F t T takes them back
+// Counts: 3iB = 3rd enclosing, 3inB / 3ilB = 3rd next / previous at the same level (nested
+// ones skipped), with operators too (d2iB, and . replays it). In visual with a selection,
+// inB / ilB step INTO it (first / last block inside), iB steps back out.
+//   ds cs on b B r ( ) { } [ ]    bracket surround that seeks and knows \left \right
+// y > gU … flash what they hit for a moment. Plus editing commands (unwrap, delete, toggle,
+// align, rename, star, size) to bind to keys or call from a vimrc with :obcommand.
+//
+// Works with Obsidian's built-in Vim mode and with the Vim Motions plugin; ds / cs on brackets
+// need Vim Motions (they extend its surround). Keymaps registered from Lua or a vimrc cancel a
+// pending operator and only know fixed delimiter pairs, so this registers straight into the
+// CodeMirror Vim engine:
+//
+//   d i n m ──► CM Vim keymap "inm" ──► motion "latexObj" {obj:'math', inner, which:'next'}
+//                                           │ spans(lines) ─► pick(cur/next/last) ─► range()
+//                                           ▼
+//                        [start, end]  (+ linewise flags) ──► Vim runs d / c / y / visual
+//
+// Vim Motions rebuilds its keymap on config reload, which can drop ours: register() is
+// idempotent and re-runs after every reload, on every note switch and when a setting changes.
+// All positions are {line, ch} (0-based, UTF-16 — the same units CodeMirror and Obsidian use).
+
+const obsidian = (() => { try { return require("obsidian"); } catch { return {}; } })(); // node tests
+const { Plugin = class {}, PluginSettingTab = class {}, Setting = class {}, Notice = class { constructor(m) { console.log(m); } } } = obsidian;
+const cm6 = name => { try { return require(name); } catch { return null; } }; // null under node
+const CMState = cm6("@codemirror/state"), CMView = cm6("@codemirror/view");
+
+// ─── Pure finders ─────────────────────────────────────────────────────────────
+// A span: { kind, a, ae, bs, b } = opener start, opener end, closer start, closer end
+// (ends exclusive). Inside is [ae, bs), whole thing is [a, b).
+
+const cmp = (p, q) => p.line - q.line || p.ch - q.ch;
+const at = (line, ch) => ({ line, ch });
+
+// $…$ and $$…$$. "$$" pair over the whole note (1st with 2nd …; see closesInParagraph); a backslash escapes the
+// next character; $ inside ``` fences and `inline code` is text; inline $ never spans lines.
+function mathSpans(lines) {
+  const out = [];
+  let open = null, fence = false;
+  for (let r = 0; r < lines.length; r++) {
+    const line = lines[r];
+    if (!open && /^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    let iopen = -1;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === "\\") { i++; continue; }
+      if (c === "`" && !open && iopen < 0) {
+        const e = line.indexOf("`", i + 1);
+        if (e > 0) i = e;
+        continue;
+      }
+      if (c !== "$") continue;
+      if (line[i + 1] === "$") {
+        if (open) { out.push({ kind: "display", a: open, ae: at(open.line, open.ch + 2), bs: at(r, i), b: at(r, i + 2) }); open = null; }
+        else if ((onlyPrefix(line.slice(0, i)) && blank(line.slice(i + 2))) || closesInParagraph(lines, r, i + 2)) open = at(r, i);
+        // "Soit $$ ok": the empty inline maths Latex Suite leaves while you type, not a $$ opener
+        else out.push({ kind: "inline", a: at(r, i), ae: at(r, i + 1), bs: at(r, i + 1), b: at(r, i + 2) });
+        iopen = -1;
+        i++;
+      } else if (!open) {
+        if (iopen >= 0) { out.push({ kind: "inline", a: at(r, iopen), ae: at(r, iopen + 1), bs: at(r, i), b: at(r, i + 1) }); iopen = -1; }
+        else iopen = i;
+      }
+    }
+  }
+  return out;
+}
+
+// A $$ that isn't alone on its line opens display maths only if a $$ closes it before the
+// paragraph ends (blank line or heading) — else it is an empty $…$.
+function closesInParagraph(lines, r, i) {
+  for (let k = r; k < lines.length; k++) {
+    const l = lines[k];
+    if (k > r && (onlyPrefix(l) || /^[>\s]*#{1,6}\s/.test(l))) return false;
+    for (let j = k === r ? i : 0; j < l.length; j++) {
+      if (l[j] === "\\") j++;
+      else if (l[j] === "$" && l[j + 1] === "$") return true;
+    }
+  }
+  return false;
+}
+
+// \begin{x} … \end{x}, matched by name (a stray \end is skipped).
+function envSpans(lines) {
+  const out = [], stack = [], re = /\\(begin|end)\{([^}]*)\}/g;
+  lines.forEach((line, r) => {
+    for (const m of line.matchAll(re)) {
+      const s = at(r, m.index), e = at(r, m.index + m[0].length);
+      if (m[1] === "begin") { stack.push({ name: m[2], a: s, ae: e }); continue; }
+      for (let k = stack.length - 1; k >= 0; k--) {
+        if (stack[k].name !== m[2]) continue;
+        const o = stack[k];
+        stack.length = k;
+        out.push({ kind: "env", name: o.name, a: o.a, ae: o.ae, bs: s, b: e });
+        break;
+      }
+    }
+  });
+  return out;
+}
+
+// (), [] and {}, typed "(" "[" "{" for ib / ir / iB; stray closers are skipped.
+const PAIR = { ")": "(", "]": "[", "}": "{" };
+// \left( … \right) is one bracket (so ib never takes the \right), and so are the interval
+// snippets icc ico ioc ioo: \left[\!\left[ a; b \right]\!\right] and their ]…[ variants.
+// \{ … \} (sets) and \left\{ … \right\} are braces for iB; each closes only its own kind.
+const OPENERS = [[/\\left([[\]])\s*\\!\s*\\left\1/y, "⟦"], [/\\left\s*\\\{/y, "\\left\\{"], [/\\\{/y, "\\{"], [/\\left\s*([([{])/y, null]];
+const CLOSERS = [[/\\right([[\]])\s*\\!\s*\\right\1/y, "⟦"], [/\\right\s*\\\}/y, "\\left\\{"], [/\\\}/y, "\\{"], [/\\right\s*([)\]}])/y, null]];
+const TYPE = { "⟦": "[", "\\left\\{": "{", "\\{": "{" };
+const sticky = (re, line, i) => { re.lastIndex = i; return re.exec(line); };
+function bracketSpans(lines) {
+  const out = [], stack = [];
+  const close = (c, r, i, end) => {
+    for (let k = stack.length - 1; k >= 0; k--) {
+      if (stack[k].c !== c) continue;
+      const o = stack[k];
+      stack.length = k;
+      out.push({ kind: "bracket", type: o.t, a: o.a, ae: o.ae, bs: at(r, i), b: at(r, end) });
+      return;
+    }
+  };
+  lines.forEach((line, r) => {
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === "\\") {
+        const o = OPENERS.map(([re, k]) => [sticky(re, line, i), k]).find(([m]) => m);
+        const q = !o && CLOSERS.map(([re, k]) => [sticky(re, line, i), k]).find(([m]) => m);
+        if (o) { const [m, k] = o; stack.push({ c: k || "\\left" + m[1], t: TYPE[k] || m[1], a: at(r, i), ae: at(r, i + m[0].length) }); i += m[0].length - 1; }
+        else if (q) { const [m, k] = q; close(k || "\\left" + PAIR[m[1]], r, i, i + m[0].length); i += m[0].length - 1; }
+        else i++;
+        continue;
+      }
+      if (c === "(" || c === "[" || c === "{") { stack.push({ c, t: c, a: at(r, i), ae: at(r, i + 1) }); continue; }
+      if (PAIR[c]) close(PAIR[c], r, i, i + 1);
+    }
+  });
+  return out;
+}
+
+const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
+const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("[") };
+
+// Is span s a better "nearest" than t for the cursor? Compared in order:
+//   1. lines between the cursor and the span's nearest edge (first char below, last char above)
+//   2. columns between them
+//   3. below beats above (a tie goes forward, like Vim's seeking)
+//   4. the one nearer in document order (earlier start below, later end above)
+function nearer(s, t, pos) {
+  const key = x => {
+    const below = cmp(x.a, pos) > 0, p = below ? x.a : at(x.b.line, x.b.ch - 1);
+    return [Math.abs(p.line - pos.line), Math.abs(p.ch - pos.ch), below ? 0 : 1];
+  };
+  const [ks, kt] = [key(s), key(t)];
+  for (let i = 0; i < 3; i++) if (ks[i] !== kt[i]) return ks[i] < kt[i];
+  return ks[2] === 0 ? cmp(s.a, t.a) < 0 : cmp(s.b, t.b) > 0;
+}
+
+// which: "cur" = like mini.ai's cover_or_nearest — the innermost span around the cursor,
+// else the NEAREST one in either direction (lines first, then columns; a tie goes below) |
+// "next" = first one starting after the cursor | "last" = last one ending before it
+// (all three within CONFIG.seekLines).
+// Seeking stops CONFIG.seekLines lines from the cursor (default 50, mini.ai's n_lines), so an edit never
+// lands on maths you can't see; the span around the cursor is always found.
+const CONFIG = { seekLines: 50, flash: true, flashMs: 250 };   // the settings tab writes these
+function pick(spans, pos, which) {
+  let cur = null, next = null, last = null, near = null;
+  for (const s of spans) {
+    const below = cmp(s.a, pos) > 0;
+    if (!below && cmp(pos, s.b) < 0) { if (!cur || cmp(s.a, cur.a) > 0) cur = s; continue; }
+    if ((below ? s.a.line - pos.line : pos.line - s.b.line) > CONFIG.seekLines) continue;
+    if (below) { if (!next || cmp(s.a, next.a) < 0) next = s; }
+    else if (!last || cmp(s.b, last.b) > 0) last = s;
+    if (!near || nearer(s, near, pos)) near = s;
+  }
+  if (which === "next") return next;
+  if (which === "last") return last;
+  return cur || near;
+}
+
+// The count-th of `cands` at the same level: forward in order of start, backward in order of
+// end, skipping any span nested in the one counted just before (2inB after {a{b}} {c} → {c}).
+function nthSameLevel(cands, forward, count) {
+  const list = cands.slice().sort((x, y) => (forward ? cmp(x.a, y.a) : cmp(y.b, x.b)));
+  let prev = null;
+  for (const s of list) {
+    if (prev && (forward ? cmp(s.a, prev.b) < 0 : cmp(s.b, prev.a) > 0)) continue;
+    prev = s;
+    if (--count === 0) return s;
+  }
+  return null;
+}
+
+// 3iB / 3inB / 3ilB: the 3rd enclosing / next / previous one, as a range. Too few → null
+// (like Vim's 3i( failing: an operator must not land on some other block).
+function countPick(spans, lines, pos, which, inner, count) {
+  if (which === "cur") {
+    const s = pick(spans, pos, "cur");
+    let r = s && range(s, lines, inner);
+    for (let i = 1; r && i < count; i++) r = grow(spans, lines, image(lines, r) || { start: r.start, last: r.start }, inner);
+    return r;
+  }
+  const forward = which === "next";
+  const cands = spans.filter(s => (forward ? cmp(s.a, pos) > 0 && s.a.line - pos.line <= CONFIG.seekLines
+    : cmp(pos, s.b) >= 0 && pos.line - s.b.line <= CONFIG.seekLines));
+  const s = nthSameLevel(cands, forward, count);
+  return s && range(s, lines, inner);
+}
+
+// Visual inB / ilB with a selection: the count-th block inside it (first / last), same level.
+// null when nothing smaller fits inside — the caller then seeks as usual.
+function shrink(spans, lines, sel, which, inner, count) {
+  const fits = s => {
+    const im = image(lines, range(s, lines, inner));
+    return im && cmp(im.start, sel.start) >= 0 && cmp(im.last, sel.last) <= 0 && (cmp(im.start, sel.start) || cmp(im.last, sel.last));
+  };
+  const s = nthSameLevel(spans.filter(fits), which === "next", count);
+  return s && range(s, lines, inner);
+}
+
+// A line prefix: indentation and blockquote / callout markers ("> ", "> > "). Text that is
+// only a prefix counts as blank: a "> $$" line is a delimiter alone on its line.
+const PREFIX = /^[ \t]*(?:>[ \t]*)*/;
+const prefixOf = line => line.match(PREFIX)[0];
+const onlyPrefix = str => prefixOf(str).length === str.length;
+
+// What an operator acts on, like Vim's i{ / a{: delimiters on their own lines make it
+// linewise (d removes the lines, c leaves one empty line to type on).
+function range(s, lines, inner) {
+  const blankBefore = p => onlyPrefix(lines[p.line].slice(0, p.ch));
+  const blankAfter = p => !lines[p.line].slice(p.ch).trim();
+  const eol = l => at(l, lines[l].length);
+  if (!inner) {
+    if (s.a.line < s.b.line && blankBefore(s.a) && blankAfter(s.b)) return { start: at(s.a.line, 0), end: eol(s.b.line), linewise: true };
+    return { start: s.a, end: s.b };
+  }
+  let start = s.ae, end = s.bs;
+  if (blankAfter(start) && blankBefore(end) && end.line > start.line + 1) return { start: at(start.line + 1, 0), end: eol(end.line - 1), linewise: true };
+  if (blankAfter(start) && start.line < end.line) start = at(start.line + 1, 0);
+  if (blankBefore(end) && end.line > start.line) end = eol(end.line - 1);
+  return { start, end };
+}
+
+// Text of [p, q) and the inside of a span as lines (delimiter-only first/last lines dropped).
+function slice(lines, p, q) {
+  if (p.line === q.line) return lines[p.line].slice(p.ch, q.ch);
+  return [lines[p.line].slice(p.ch), ...lines.slice(p.line + 1, q.line), lines[q.line].slice(0, q.ch)].join("\n");
+}
+function innerLines(lines, s) {
+  const P = prefixOf(lines[s.a.line]).slice(0, s.a.ch);
+  const t = slice(lines, s.ae, s.bs).split("\n").map((l, k) => (k > 0 && P && l.startsWith(P) ? l.slice(P.length) : l));
+  if (t.length > 1 && onlyPrefix(t[0])) t.shift();
+  if (t.length > 1 && onlyPrefix(t[t.length - 1])) t.pop();
+  return t;
+}
+
+// ─── Edits (the commands) — each returns EditorChange[] for one undoable transaction ──────
+const blank = s => !s.trim();
+
+// Delete whole lines `rows` (sorted); adjacent rows go in one change so they never overlap.
+function dropLines(lines, rows) {
+  const out = [];
+  for (let k = 0; k < rows.length;) {
+    let r2 = rows[k];
+    const r1 = r2;
+    while (rows[k + 1] === r2 + 1) r2 = rows[++k];
+    k++;
+    if (r2 + 1 < lines.length) out.push({ from: at(r1, 0), to: at(r2 + 1, 0), text: "" });
+    else if (r1 > 0) out.push({ from: at(r1 - 1, lines[r1 - 1].length), to: at(r2, lines[r2].length), text: "" });
+    else out.push({ from: at(r1, 0), to: at(r2, lines[r2].length), text: "" });
+  }
+  return out;
+}
+
+// Remove the delimiters, keep the inside; a delimiter alone on its line takes the line.
+function unwrapChanges(lines, s, extraRows = []) {
+  const alone = (p, q) => s.a.line !== s.b.line && onlyPrefix(lines[p.line].slice(0, p.ch)) && blank(lines[q.line].slice(q.ch));
+  const changes = [], rows = [];
+  for (const [p, q] of [[s.a, s.ae], [s.bs, s.b]]) {
+    if (alone(p, q)) rows.push(p.line);
+    else changes.push({ from: p, to: q, text: "" });
+  }
+  return [...changes, ...dropLines(lines, [...rows, ...extraRows].sort((x, y) => x - y))];
+}
+
+// ─── align-type environments ──────────────────────────────────────────────────
+const ALIGNED = /^(align|flalign|eqnarray|split)/;    // & columns, \\ rows
+const ARG_ENV = /^(alignat|alignedat|array|tabular)/; // \begin{…}{arg}
+const argOf = (lines, s) => (ARG_ENV.test(s.name) && /^\{[^}]*\}/.exec(lines[s.ae.line].slice(s.ae.ch))) || null;
+
+// The alignment marks inside s: top-level runs of & (and \\ when `rows`), spaces between
+// them included, as {r, i, j}. Not \&, not the marks of a nested matrix / cases.
+function alignMarks(lines, s, rows) {
+  const nested = envSpans(lines).filter(e => cmp(e.a, s.ae) >= 0 && cmp(e.b, s.bs) <= 0);
+  const tok = (line, j) => (line[j] === "&" ? 1 : rows && line.startsWith("\\\\", j) ? 2 : 0);
+  const out = [];
+  for (let r = s.ae.line; r <= s.bs.line; r++) {
+    const line = lines[r], from = r === s.ae.line ? s.ae.ch : 0, to = r === s.bs.line ? s.bs.ch : line.length;
+    for (let i = from; i < to; i++) {
+      const inner = nested.find(e => cmp(e.a, at(r, i)) <= 0 && cmp(at(r, i), e.b) < 0);
+      if (inner) { if (inner.b.line > r) break; i = inner.b.ch - 1; continue; }
+      const k = tok(line, i);
+      if (!k) { if (line[i] === "\\") i++; continue; }
+      let j = i + k;
+      for (;;) {
+        let m = j;
+        while (m < to && line[m] === " ") m++;
+        const k2 = m < to ? tok(line, m) : 0;
+        if (!k2) break;
+        j = m + k2;
+      }
+      out.push({ r, i, j });
+      i = j - 1;
+    }
+  }
+  return out;
+}
+
+// Delete the marks: a space on both sides collapses to one, a mark ending its line takes the
+// spaces before it, and a line left empty is dropped (a blank line would end the $$ block).
+// → { changes, drop: rows to delete }
+function markChanges(lines, s, rows) {
+  const by = new Map();
+  for (const m of alignMarks(lines, s, rows)) { if (!by.has(m.r)) by.set(m.r, []); by.get(m.r).push(m); }
+  const changes = [], drop = [];
+  for (const [r, ms] of by) {
+    const line = lines[r], start = r === s.ae.line ? s.ae.ch : 0, end = r === s.bs.line ? s.bs.ch : line.length;
+    if (r > s.ae.line && r < s.bs.line && onlyPrefix(ms.reduceRight((l, m) => l.slice(0, m.i) + l.slice(m.j), line).trimEnd())) { drop.push(r); continue; }
+    for (const { i, j } of ms) {
+      let a = i, b = j;
+      if (blank(line.slice(b, end))) while (a > start && line[a - 1] === " ") a--;
+      else if (line[a - 1] === " " && line[b] === " ") b++;
+      changes.push({ from: at(r, a), to: at(r, b), text: "" });
+    }
+  }
+  return { changes, drop };
+}
+
+// Unwrap environment: an align-type one also loses its & and \\, and
+// alignat / array / tabular their {arg}.
+function envUnwrapChanges(lines, s) {
+  const arg = argOf(lines, s);
+  if (arg) s = { ...s, ae: at(s.ae.line, s.ae.ch + arg[0].length) };
+  if (!ALIGNED.test(s.name)) return unwrapChanges(lines, s);
+  const { changes, drop } = markChanges(lines, s, true);
+  return [...unwrapChanges(lines, s, drop), ...changes];
+}
+
+// Rename environment extras, in the doc before the rename: align → gather / equation / multline drops
+// the & (they don't align); → alignat adds its {columns}; leaving alignat / array drops it.
+function renameExtras(lines, s, name) {
+  const out = [], arg = argOf(lines, s);
+  if (ALIGNED.test(s.name) && /^(gather|gathered|equation|multline)\*?$/.test(name)) {
+    const { changes, drop } = markChanges(lines, s, false);
+    out.push(...changes, ...dropLines(lines, drop));
+  }
+  if (/^(alignat|alignedat)\*?$/.test(name) && !arg) {
+    const amps = new Map();
+    for (const m of alignMarks(lines, s, false)) amps.set(m.r, (amps.get(m.r) || 0) + lines[m.r].slice(m.i, m.j).split("&").length - 1);
+    out.push({ from: s.ae, to: s.ae, text: "{" + Math.max(1, ...[...amps.values()].map(n => Math.ceil((n + 1) / 2))) + "}" });
+  }
+  if (arg && !ARG_ENV.test(name)) out.push({ from: s.ae, to: at(s.ae.line, s.ae.ch + arg[0].length), text: "" });
+  return out;
+}
+
+// Align: & before the first relation of a line (outside brackets), unless it has one.
+const RELATION = /^(?::=|=|<|>|\\(?:leq?|geq?|leqslant|geqslant|neq?|equiv|approx|sim|simeq|cong|implies|impliedby|iff|Rightarrow|Leftarrow|Leftrightarrow|Longrightarrow|Longleftarrow|Longleftrightarrow)(?![A-Za-z]))/;
+function ampBeforeRelation(l) {
+  if (/(^|[^\\])&/.test(l)) return l;
+  let depth = 0;
+  for (let i = 0; i < l.length; i++) {
+    if (!depth && RELATION.test(l.slice(i))) return l.slice(0, i) + "&" + l.slice(i);
+    let c = l[i];
+    if (c === "\\") {
+      if ("{}".includes(l[i + 1])) c = l[++i];
+      else { while (/[A-Za-z]/.test(l[i + 1] || "")) i++; continue; }
+    }
+    // not [ ]: French intervals ]0, 1[ don't pair up
+    if ("({".includes(c)) depth++;
+    else if (")}".includes(c)) depth = Math.max(0, depth - 1);
+  }
+  return l;
+}
+
+// Apply EditorChange[] (positions in `lines`) → new lines.
+function applyChanges(lines, changes) {
+  const starts = [0];
+  for (const l of lines) starts.push(starts[starts.length - 1] + l.length + 1);
+  const off = p => starts[p.line] + p.ch;
+  return [...changes].sort((x, y) => off(y.from) - off(x.from))
+    .reduce((d, c) => d.slice(0, off(c.from)) + c.text + d.slice(off(c.to)), lines.join("\n")).split("\n");
+}
+
+// Delete the whole thing; on its own lines take the lines (and one of two blank neighbours),
+// inline don't leave a double space.
+function deleteChanges(lines, s) {
+  if (onlyPrefix(lines[s.a.line].slice(0, s.a.ch)) && blank(lines[s.b.line].slice(s.b.ch))) {
+    let r1 = s.a.line, r2 = s.b.line;
+    if (r1 > 0 && r2 + 1 < lines.length && onlyPrefix(lines[r1 - 1]) && onlyPrefix(lines[r2 + 1])) r2++;
+    if (r2 + 1 < lines.length) return [{ from: at(r1, 0), to: at(r2 + 1, 0), text: "" }];
+    if (r1 > 0) return [{ from: at(r1 - 1, lines[r1 - 1].length), to: at(r2, lines[r2].length), text: "" }];
+    return [{ from: at(r1, 0), to: at(r2, lines[r2].length), text: "" }];
+  }
+  let from = s.a;
+  const before = lines[s.a.line][s.a.ch - 1], after = lines[s.b.line][s.b.ch];
+  if (before === " " && (after === " " || after === undefined)) from = at(s.a.line, s.a.ch - 1);
+  return [{ from, to: s.b, text: "" }];
+}
+
+// $…$ ⇄ $$…$$ (display → inline joins its lines).
+function toggleChanges(lines, s) {
+  if (s.kind === "display") {
+    // an align inside can't be inline: unwrap it (its & and \\ go too)
+    let inner = innerLines(lines, s);
+    const al = envSpans(inner).filter(e => ALIGNED.test(e.name)), top = al.filter(e => !al.some(o => o !== e && cmp(o.a, e.a) <= 0 && cmp(e.b, o.b) <= 0));
+    if (top.length) inner = applyChanges(inner, top.flatMap(e => envUnwrapChanges(inner, e)));
+    const joined = inner.filter(l => !blank(l)).map(l => l.trim()).join(" ");
+    return [{ from: s.a, to: s.b, text: "$" + joined + "$" }];
+  }
+  // only the $ change, so the maths (and the cursor in it) is left alone
+  const line = lines[s.a.line], P = line.slice(0, s.a.ch);
+  if (onlyPrefix(P) && blank(line.slice(s.b.ch))) return [{ from: at(s.a.line, 0), to: s.ae, text: P + "$$\n" + P }, { from: s.bs, to: at(s.a.line, line.length), text: "\n" + P + "$$" }];
+  return [{ from: s.a, to: s.ae, text: "$$" }, { from: s.bs, to: s.b, text: "$$" }];
+}
+
+// Where the cursor goes after `changes` (positions in the original doc): it stays on the same
+// character; one inside removed or rewritten text goes to where that text was.
+function mapCursor(lines, changes, pos) {
+  const starts = [0];
+  for (const l of lines) starts.push(starts[starts.length - 1] + l.length + 1);
+  const off = p => starts[p.line] + p.ch, cur = off(pos);
+  const cut = changes.find(c => off(c.from) <= cur && cur < off(c.to));
+  const target = cut ? off(cut.from) : cur;
+  let out = lines.join("\n"), shift = 0;
+  for (const c of [...changes].sort((x, y) => off(y.from) - off(x.from))) {
+    out = out.slice(0, off(c.from)) + c.text + out.slice(off(c.to));
+    if (off(c.to) <= target && c !== cut) shift += c.text.length - (off(c.to) - off(c.from));
+  }
+  const before = out.slice(0, target + shift).split("\n");
+  return at(before.length - 1, before[before.length - 1].length);
+}
+
+// Align: the maths under the cursor → $$ \begin{align} … \\ … \end{align} $$ (numbered: \tag and \label work).
+// Inline $…$ too (it moves out to its own lines, the text around it stays). Maths that is already one
+// align-type or equation environment keeps its body and becomes align; align itself → null (nothing to do).
+const TO_ALIGN = /^(align\*|aligned|equation\*?|gather\*?|gathered|multline\*?)$/;
+function alignChanges(lines, s) {
+  let inner = innerLines(lines, s);
+  const t = inner.filter(l => !blank(l)), first = (t[0] || "").trim(), last = (t[t.length - 1] || "").trim();
+  const env = /^\\begin\{([^}]*)\}$/.exec(first), whole = env && last === "\\end{" + env[1] + "}" && envSpans(t.map(l => l.trim()))
+    .some(e => e.name === env[1] && e.a.line === 0 && e.b.line === t.length - 1);
+  if (whole && env[1] === "align") return null;
+  if (whole && TO_ALIGN.test(env[1])) {                    // its rows stay as written
+    const body = t.slice(1, -1);
+    inner = /^(align|aligned)/.test(env[1]) ? body : body.map(ampBeforeRelation);
+  } else inner = inner.map(ampBeforeRelation).map((l, k, all) => (k < all.length - 1 && !blank(l) && !/\\\\\s*$/.test(l) ? l + " \\\\" : l));
+  const before = lines[s.a.line].slice(0, s.a.ch), after = lines[s.b.line].slice(s.b.ch), P = prefixOf(before);
+  const body = ["$$", "\\begin{align}", ...inner, "\\end{align}", "$$"].map(l => P + l);
+  const out = [...(onlyPrefix(before) ? [] : [before.trimEnd()]), ...body, ...(blank(after) ? [] : [P + after.trimStart()])];
+  return [{ from: at(s.a.line, 0), to: at(s.b.line, lines[s.b.line].length), text: out.join("\n") }];
+}
+
+// The innermost span the cursor is in (a delimiter counts), never a neighbour: for edits that rewrite it.
+function around(spans, pos) {
+  let best = null;
+  for (const s of spans) if (cmp(s.a, pos) <= 0 && cmp(pos, s.b) < 0 && (!best || cmp(s.a, best.a) > 0)) best = s;
+  return best;
+}
+
+// align ⇄ align*
+function starChanges(s) {
+  const name = s.name.endsWith("*") ? s.name.slice(0, -1) : s.name + "*";
+  return [{ from: s.bs, to: s.b, text: "\\end{" + name + "}" }, { from: s.a, to: s.ae, text: "\\begin{" + name + "}" }];
+}
+
+// ─── bracket surround: ds / cs on b B r ( ) { } [ ] ──────────────────────────
+// The target seeks like ib / iB / ir. Like vim-surround: an opening target (ds( cs{…) also
+// trims the spaces inside, an opening replacement (cs b ( …) puts one space inside.
+// \left sizing is kept: cs b B on \left( … \right) gives \left\{ … \right\}; a { } made in
+// maths is \{ \} (a bare { } would not show). ds on \left( … \right) trims its spaces too.
+const TARGET = { b: "(", "(": "(", ")": "(", B: "{", "{": "{", "}": "{", r: "[", "[": "[", "]": "[" };
+const OBJ_OF = { "(": "paren", "{": "brace", "[": "square" };
+function surroundChanges(lines, s, target, repl, inMaths) {
+  const open = slice(lines, s.a, s.ae), sized = /^\\left/.test(open);
+  let from = s.ae, to = s.bs;
+  const spaced = repl && "([{".includes(repl);
+  if ("([{".includes(target) || spaced || (!repl && sized)) {
+    const l = lines[from.line];
+    let i = from.ch;
+    while (i < l.length && /[ \t]/.test(l[i]) && (from.line < to.line || i < to.ch)) i++;
+    from = at(from.line, i);
+    let j = to.ch;
+    while (j > 0 && /[ \t]/.test(lines[to.line][j - 1]) && (to.line > from.line || j > from.ch)) j--;
+    to = at(to.line, j);
+  }
+  let o = "", c = "";
+  if (repl) {
+    const t = TARGET[repl];
+    [o, c] = sized ? { "(": ["\\left(", "\\right)"], "[": ["\\left[", "\\right]"], "{": ["\\left\\{", "\\right\\}"] }[t]
+      : t === "{" ? (inMaths ? ["\\{", "\\}"] : ["{", "}"]) : t === "(" ? ["(", ")"] : ["[", "]"];
+    if (spaced) { o += " "; c = " " + c; }
+  }
+  return [{ from: s.a, to: from, text: o }, { from: to, to: s.b, text: c }];
+}
+const inMathsAt = (lines, p) => mathSpans(lines).some(m => cmp(m.a, p) <= 0 && cmp(p, m.b) < 0);
+
+// Size bracket: ( ) [ ] \{ \} ⇄ \left( \right) … — the nearest bracket of any kind that can be
+// sized (a bare { } is LaTeX grouping, the ⟦ ⟧ intervals are sized already).
+const sizable = (lines, s) => !/^\{$|\\!/.test(slice(lines, s.a, s.ae));
+function sizeChanges(lines, s) {
+  const open = slice(lines, s.a, s.ae), close = slice(lines, s.bs, s.b);
+  if (!/^\\left/.test(open)) return [{ from: s.a, to: s.a, text: "\\left" }, { from: s.bs, to: s.bs, text: "\\right" }];
+  const lw = /^\\left\s*/.exec(open)[0].length, rw = /^\\right\s*/.exec(close)[0].length;
+  return [{ from: s.a, to: at(s.a.line, s.a.ch + lw), text: "" }, { from: s.bs, to: at(s.bs.line, s.bs.ch + rw), text: "" }];
+}
+
+// Last selected character of a visual selection covering [start, end), or null when empty.
+// CodeMirror Vim can't END a visual selection on an astral character (😀, 𝔸 — two UTF-16
+// units) that follows others: its own vi( / v$ then also delete the closing bracket
+// (measured live). So such a character is left out of the selection — never split, never
+// overshot; alone, it is selected (that case works). Operators (dim, cib…) are unaffected.
+const isHigh = (l, ch) => { const c = l.charCodeAt(ch); return c >= 0xd800 && c <= 0xdbff; };
+const isLow = (l, ch) => { const c = l.charCodeAt(ch); return c >= 0xdc00 && c <= 0xdfff; };
+function charBefore(lines, p) {
+  if (p.ch > 0) return at(p.line, isLow(lines[p.line], p.ch - 1) && p.ch > 1 ? p.ch - 2 : p.ch - 1);
+  return p.line > 0 ? at(p.line - 1, lines[p.line - 1].length) : null;
+}
+function visualEnd(lines, start, end) {
+  let e = charBefore(lines, end);
+  while (e && isHigh(lines[e.line], e.ch) && cmp(e, start) > 0) e = charBefore(lines, e);
+  return e && cmp(e, start) >= 0 ? e : null;
+}
+
+// ]m [m ]e [e: the count-th span starting after (forward) / before the cursor, or the last
+// one that exists (like Vim's 9]] stopping at the last section). No seek limit: it only moves.
+function jump(spans, pos, forward, count = 1) {
+  const c = spans.filter(s => (forward ? cmp(s.a, pos) > 0 : cmp(s.a, pos) < 0)).sort((x, y) => (forward ? 1 : -1) * cmp(x.a, y.a));
+  return c[Math.min(count, c.length) - 1] || null;
+}
+
+// What visual mode shows for a range: {start, last} (last character included), or null.
+function image(lines, r) {
+  if (r.linewise) return { start: r.start, last: r.end };
+  const last = visualEnd(lines, r.start, r.end);
+  return last && { start: r.start, last };
+}
+// Repeating ie / ib / ae … in visual mode grows like mini.ai: the innermost span whose
+// selection is strictly bigger than the current one. null when there is nothing bigger.
+function grow(spans, lines, sel, inner) {
+  let best = null;
+  for (const s of spans) {
+    const r = range(s, lines, inner), im = image(lines, r);
+    if (!im || cmp(im.start, sel.start) > 0 || cmp(im.last, sel.last) < 0) continue;
+    if (!cmp(im.start, sel.start) && !cmp(im.last, sel.last)) continue;
+    if (!best || cmp(s.a, best.s.a) > 0) best = { s, r };
+  }
+  return best && best.r;
+}
+
+// ─── Vim wiring ────────────────────────────────────────────────────────────────
+const KEYS = [];
+for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"]])
+  for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
+    for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj, which, inner }]);
+const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
+  ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
+  ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
+  ["](", { obj: "paren", forward: true }], ["[(", { obj: "paren", forward: false }],
+  ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }]];
+
+const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor" };
+const lineArray = cm => cm.getValue().split("\n");
+
+// The CM Vim adapter of an Obsidian editor. Vim Motions keeps it private (not on view.cm),
+// so find it on the view plugin that holds it.
+// Note: reads CodeMirror's private view.plugins; if it moves, Rename environment just won't copy the name to \end.
+function vimAdapter(editor) {
+  const view = editor.cm;
+  if (!view) return null;
+  if (view.cm) return view.cm;
+  const hit = (view.plugins || []).map(p => p.value).find(v => v && v.cm && v.cm.state && v.cm.state.vim);
+  return hit ? hit.cm : null;
+}
+
+// CM Vim motion: return [anchor, head] and let Vim apply the pending operator / selection.
+function latexObj(cm, head, args, vim, inputState) {
+  const lines = lineArray(cm), spans = SPANS[args.obj](lines), count = args.repeat || 1;
+  // visual with a selection: iB grows out of it, inB / ilB step into it
+  const sel = vim.visualMode ? selection(lines, vim) : null;
+  let r = sel && (args.which === "cur" ? growN(spans, lines, sel, args.inner, count) : shrink(spans, lines, sel, args.which, args.inner, count));
+  if (!r) {
+    r = countPick(spans, lines, at(head.line, head.ch), args.which, args.inner, count);
+    if (!r) { new Notice(count > 1 ? `${NONE[args.obj]} (${count} wanted)` : NONE[args.obj]); return null; }
+  }
+  if (vim.visualMode) {
+    // the object decides the visual kind: linewise ranges → V, the rest → v (even from V / Ctrl-v)
+    const kind = !!r.linewise;
+    if (vim.visualLine !== kind || vim.visualBlock) {
+      vim.visualLine = kind;
+      vim.visualBlock = false;
+      const A = window.CodeMirrorAdapter;
+      if (A && A.signal) A.signal(cm, "vim-mode-change", { mode: "visual", subMode: kind ? "linewise" : "" });
+    }
+    if (kind) return [r.start, r.end];
+    // visual selections include the head character: end one character before
+    const end = visualEnd(lines, r.start, r.end);
+    // nothing to select ($$, ()): leave visual with the cursor inside, ready for i
+    if (!end) {
+      const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+      if (Vim && Vim.exitVisualMode) Vim.exitVisualMode(cm);
+      cm.setCursor(r.start);
+      new Notice("Empty — i to type inside");
+      return null;
+    }
+    madeSel = cmp(r.start, end) ? null : `${end.line}:${end.ch}`;
+    return [r.start, end];
+  }
+  args.linewise = !!r.linewise;
+  args.inclusive = false;
+  if (r.linewise && inputState && inputState.operatorArgs) inputState.operatorArgs.linewise = true;
+  // y, >, gU … leave the text in place: flash it, so a seek that went off the cursor shows where
+  if (inputState && inputState.operator && !/^(delete|change)$/.test(inputState.operator)) flashLater(cm, r);
+  return [r.start, r.end];
+}
+
+// Visual mode with a selection (more than one character, linewise, or the one we just made)
+// as {start, last}, else null. A plain one-character selection is where `v` left you, so the
+// object seeks as usual; but the b of (b) that vib / inb selected still grows / steps.
+let madeSel = null; // "line:ch" of the last one-character visual object we returned
+function selection(lines, vim) {
+  const { anchor, head } = vim.sel;
+  if (!vim.visualLine && !cmp(anchor, head) && madeSel !== `${head.line}:${head.ch}`) return null;
+  let [start, last] = cmp(anchor, head) < 0 ? [anchor, head] : [head, anchor];
+  if (vim.visualLine) { start = at(start.line, 0); last = at(last.line, lines[last.line].length); }
+  return { start: at(start.line, start.ch), last: at(last.line, last.ch) };
+}
+// Repeating the object grows it, count times (v2iB from inside {b} → two levels out).
+function growN(spans, lines, sel, inner, count) {
+  let r = null;
+  for (let i = 0; i < count; i++) {
+    r = grow(spans, lines, sel, inner);
+    if (!r) return null;
+    sel = image(lines, r) || { start: r.start, last: r.start };
+  }
+  return r;
+}
+
+// ]m [m ]e [e — a motion, so d]m, y[e, v]m and counts work too.
+let lastJump = null; // {obj, forward} of the last ]x / [x, until an f F t T
+function latexJump(cm, head, args) {
+  if (!args.again) lastJump = { obj: args.obj, forward: args.forward };
+  const s = jump(SPANS[args.obj](lineArray(cm)), at(head.line, head.ch), args.forward, args.repeat || 1);
+  // A plain jump (normal/visual, no d]m etc.) lands like `zz`, once Vim has moved the cursor.
+  const view = cm.cm6;
+  if (s && view && CMView && !cm.state.vim?.inputState?.operator) setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
+  return s ? s.a : null;
+}
+
+// ; and , repeat the last ]x / [x (, the other way), else Vim's own f / t repeat.
+function repeatJump(orig) {
+  return (cm, head, args, vim, inputState) => lastJump
+    ? latexJump(cm, head, { obj: lastJump.obj, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true })
+    : orig(cm, head, args, vim, inputState);
+}
+// f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
+// reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
+function onKeydown(e, cm) {
+  if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
+  if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
+}
+
+// ─── Flash (like nvim's highlight-on-yank) ────────────────────────────────────
+const flashEffect = CMState && CMState.StateEffect.define();
+const flashField = CMState && CMView && CMState.StateField.define({
+  create: () => CMView.Decoration.none,
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) if (e.is(flashEffect)) {
+      deco = e.value ? CMView.Decoration.set(flashRanges(tr.state.doc, e.value.from, e.value.to), true) : CMView.Decoration.none;
+    }
+    return deco;
+  },
+  provide: f => CMView.EditorView.decorations.from(f),
+});
+// The text itself, and its lines: Live Preview draws maths away from the cursor as a rendered
+// widget, which hides a mark on the source, but the line background still shows.
+function flashRanges(doc, from, to) {
+  const out = [CMView.Decoration.mark({ class: "latex-objects-flash" }).range(from, to)];
+  for (let l = doc.lineAt(from).number; l <= doc.lineAt(to).number; l++)
+    out.push(CMView.Decoration.line({ class: "latex-objects-flash-line" }).range(doc.line(l).from));
+  return out;
+}
+// After the operator ran (same positions: y, >, gU don't move lines), mark the range briefly.
+function flashLater(cm, r) {
+  const view = cm.cm6;
+  if (!flashField || !view || !CONFIG.flash) return;
+  setTimeout(() => {
+    const doc = view.state.doc;
+    const off = p => (p.line < doc.lines ? Math.min(doc.line(p.line + 1).from + p.ch, doc.line(p.line + 1).to) : doc.length);
+    const from = off(r.start), to = off(r.end);
+    if (from >= to || !view.dom.isConnected || !view.state.field(flashField, false)) return;
+    view.dispatch({ effects: flashEffect.of({ from, to }) });
+    setTimeout(() => view.dom.isConnected && view.dispatch({ effects: flashEffect.of(null) }), CONFIG.flashMs);
+  }, 0);
+}
+
+// ds / cs go through Vim Motions' own "surroundAction" (keys s<character> after an operator):
+// wrap it, take bracket targets with d / c, hand everything else (ys, ds m, cs " ' …) back.
+function surroundAction(orig) {
+  const fn = (cm, args, vim) => {
+    const target = TARGET[args.selectedCharacter], op = args.pendingOperator;
+    if (!target || (op !== "delete" && op !== "change")) return orig(cm, args, vim);
+    const lines = lineArray(cm), head = cm.getCursor(), s = pick(SPANS[OBJ_OF[target]](lines), at(head.line, head.ch), "cur");
+    if (!s) return new Notice(NONE[OBJ_OF[target]]);
+    const run = repl => {
+      if (repl && !TARGET[repl]) return new Notice("cs: replace a bracket with b B r ( ) { } [ ]");
+      dispatchChanges(cm, surroundChanges(lines, s, args.selectedCharacter, repl, inMathsAt(lines, s.a)));
+      cm.setCursor(s.a);
+    };
+    if (op === "delete") return run(null);
+    // . repeat replays this same input state: the replacement typed the first time is on it
+    const st = vim.lastEditInputState;
+    if (st && st._latexRepl) return run(st._latexRepl);
+    nextKey(k => { if (k) { if (st) st._latexRepl = k; run(k); } });
+  };
+  fn.latexOrig = orig;
+  return fn;
+}
+// The next typed character (AltGr / Shift / dead keys wait for it), or null on anything else.
+function nextKey(cb) {
+  const on = e => {
+    if (["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "Dead"].includes(e.key)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    window.removeEventListener("keydown", on, true);
+    cb(e.key.length === 1 && !e.ctrlKey && !e.metaKey ? e.key : null);
+  };
+  window.addEventListener("keydown", on, true);
+}
+// One transaction = one undo step.
+function dispatchChanges(cm, changes) {
+  const view = cm.cm6, off = p => cm.indexFromPos(p);
+  view.dispatch({ changes: changes.map(c => ({ from: off(c.from), to: off(c.to), insert: c.text })) });
+}
+
+// Idempotent: drop our keys, then add them (so they never pile up). The Vim object is looked
+// up fresh each time: Vim Motions deletes it when it unloads. `opts` says which groups are on.
+const OPTS = { jumps: true, repeatJumps: true, surround: true };
+function register(opts = OPTS) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+  if (!Vim) return;
+  unregister();
+  Vim.defineMotion("latexObj", latexObj);
+  Vim.defineMotion("latexJump", latexJump);
+  for (const [motion, list] of [["latexObj", KEYS], ["latexJump", opts.jumps ? JUMPS : []]]) for (const [keys, args] of list) {
+    Vim.removeMapCommand && Vim.removeMapCommand(keys);
+    Vim.mapCommand(keys, "motion", motion, args);
+  }
+  const cur = Vim.getAction && Vim.getAction("surroundAction");
+  if (opts.surround && cur && !cur.latexOrig) Vim.defineAction("surroundAction", surroundAction(cur));
+  // getMotion hands back a fresh bound copy each time (no flag survives on it), so the true
+  // original is kept on the Vim object, which dies with it when Vim Motions unloads.
+  if (opts.jumps && opts.repeatJumps) {
+    if (!Vim.latexRepeatOrig && Vim.getMotion) Vim.latexRepeatOrig = Vim.getMotion("repeatLastCharacterSearch");
+    if (Vim.latexRepeatOrig) Vim.defineMotion("repeatLastCharacterSearch", repeatJump(Vim.latexRepeatOrig));
+  }
+}
+function unregister() {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+  if (Vim && Vim.removeMapCommand) for (const [keys] of [...KEYS, ...JUMPS]) Vim.removeMapCommand(keys);
+  const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
+  if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
+  if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
+}
+
+const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, flash: true, flashMs: 250 };
+// Saved data → settings, bad or missing values back to their default.
+function cleanSettings(data) {
+  const d = Object.assign({}, DEFAULTS, data || {}), out = {};
+  for (const k of Object.keys(DEFAULTS)) {
+    const v = d[k], def = DEFAULTS[k];
+    out[k] = typeof def === "boolean" ? (typeof v === "boolean" ? v : def)
+      : Number.isFinite(v) ? Math.round(Math.min(Math.max(v, k === "seekLines" ? 1 : 0), k === "seekLines" ? 1000 : 5000)) : def;
+  }
+  return out;
+}
+
+class LatexObjects extends Plugin {
+  async onload() {
+    this.patched = [];
+    await this.loadSettings();
+    this.addSettingTab(new LatexObjectsSettings(this.app, this));
+    if (flashField) this.registerEditorExtension(flashField);
+    this.app.workspace.onLayoutReady(() => { this.patchReloads(); this.applyKeys(); });
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => { this.patchReloads(); this.applyKeys(); }));
+    this.registerDomEvent(window, "keydown", e => onKeydown(e, this.app.workspace.activeEditor && vimAdapter(this.app.workspace.activeEditor.editor)), true);
+
+    const cmd = (id, name, fn) => this.addCommand({ id, name, editorCallback: editor => fn(editor) });
+    cmd("unwrap-math", "Unwrap maths (delete $ / $$, keep the maths)", ed => this.edit(ed, "math", unwrapChanges));
+    cmd("delete-math", "Delete maths with its $ / $$", ed => this.edit(ed, "math", deleteChanges));
+    cmd("toggle-math", "Toggle inline / display maths", ed => this.edit(ed, "math", toggleChanges));
+    cmd("align-math", "Turn the maths under the cursor into align", ed => {
+      const lines = ed.getValue().split("\n"), pos = ed.getCursor(), s = around(mathSpans(lines), at(pos.line, pos.ch));
+      if (!s) return new Notice("Not in maths: put the cursor inside $…$ or $$…$$");
+      const changes = alignChanges(lines, s);
+      if (!changes) return new Notice("Already align");
+      this.commit(ed, lines, changes, pos);
+    });
+    cmd("unwrap-env", "Unwrap environment (delete \\begin / \\end, keep the content)", ed => this.edit(ed, "env", envUnwrapChanges));
+    cmd("star-env", "Toggle environment star", ed => this.edit(ed, "env", (l, s) => starChanges(s)));
+    cmd("rename-env", "Rename environment", ed => this.renameEnv(ed));
+    cmd("size-bracket", "Toggle \\left \\right on the nearest bracket", ed => {
+      const lines = ed.getValue().split("\n"), pos = ed.getCursor();
+      const s = pick(bracketSpans(lines).filter(b => sizable(lines, b)), at(pos.line, pos.ch), "cur");
+      if (!s) return new Notice("No ( ), [ ] or \\{ \\} near the cursor");
+      this.commit(ed, lines, sizeChanges(lines, s), pos);
+    });
+  }
+
+  onunload() {
+    unregister();
+    for (const [obj, name, orig] of this.patched) obj[name] = orig;
+  }
+
+  async loadSettings() {
+    this.settings = cleanSettings(await this.loadData());
+    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+  }
+  async saveSettings() {
+    this.settings = cleanSettings(this.settings);
+    await this.saveData(this.settings);
+    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+    this.applyKeys();
+  }
+  applyKeys() { register(this.settings); }
+
+  // Re-register once Vim Motions has finished (re)loading its vimrc / init.lua — including
+  // the automatic reload when you save one of them. Without Vim Motions this does nothing.
+  patchReloads() {
+    const vm = this.app.plugins && this.app.plugins.plugins && this.app.plugins.plugins["vim-motions"];
+    if (!vm || vm.__latexObjects) return;
+    vm.__latexObjects = true;
+    for (const name of ["reloadAllConfigs", "softReloadVimrc", "softReloadLuaConfig"]) {
+      const orig = vm[name];
+      if (typeof orig !== "function") continue;
+      const plugin = this;
+      vm[name] = async function (...args) { try { return await orig.apply(this, args); } finally { plugin.applyKeys(); } };
+      this.patched.push([vm, name, orig]);
+    }
+    this.patched.push([vm, "__latexObjects", undefined]);
+  }
+
+  find(editor, obj) {
+    const lines = editor.getValue().split("\n"), pos = editor.getCursor();
+    const s = pick(SPANS[obj](lines), at(pos.line, pos.ch), "cur");
+    if (!s) new Notice(NONE[obj]);
+    return s && { lines, s, pos };
+  }
+
+  edit(editor, obj, changesOf) {
+    const f = this.find(editor, obj);
+    if (!f) return;
+    this.commit(editor, f.lines, changesOf(f.lines, f.s), f.pos);
+  }
+
+  commit(editor, lines, changes, pos) {
+    const p = mapCursor(lines, changes, pos);
+    editor.transaction({ changes });
+    // normal mode: not past the last character
+    editor.setCursor({ line: p.line, ch: Math.max(0, Math.min(p.ch, editor.getLine(p.line).length - 1)) });
+  }
+
+  // Blank the name in \begin{}, type the new one; leaving insert mode copies it to \end{}.
+  renameEnv(editor) {
+    const f = this.find(editor, "env");
+    if (!f) return;
+    // resolve Vim first: never blank the name unless the rest of the rename can run
+    const cm = vimAdapter(editor), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+    if (!cm || !Vim) return new Notice("Rename needs the Vim adapter — not found");
+    const { s } = f, nameAt = at(s.a.line, s.a.ch + 7), file = this.app.workspace.getActiveFile();
+    const before = editor.getValue(), nameFrom = editor.posToOffset(nameAt), nameTo = editor.posToOffset(at(s.ae.line, s.ae.ch - 1));
+    editor.replaceRange("", nameAt, at(s.ae.line, s.ae.ch - 1));
+    editor.setCursor(nameAt);
+    const done = e => {
+      if (e && e.mode === "insert") return;
+      cm.off("vim-mode-change", done);
+      // switched note while typing: positions no longer mean anything
+      if (this.app.workspace.getActiveFile() !== file || (this.app.workspace.activeEditor || {}).editor !== editor) return;
+      const lines = editor.getValue().split("\n"), line = lines[s.a.line] || "";
+      if (!line.startsWith("\\begin{", s.a.ch)) return;
+      const close = line.indexOf("}", nameAt.ch);
+      if (close < 0) return;
+      let name = line.slice(nameAt.ch, close);
+      // One undo step: when the only edit since the rename started is the new name, rewind to before it
+      // and apply the whole rename as a single change. (Anything else typed meanwhile → the
+      // two-step path below, never losing text.)
+      if (editor.getValue() === before.slice(0, nameFrom) + name + before.slice(nameTo) && this.rewind(editor, before)) {
+        if (!name || name === s.name) return;
+        const extras = renameExtras(before.split("\n"), s, name);
+        editor.transaction({ changes: [{ from: s.bs, to: s.b, text: "\\end{" + name + "}" }, { from: nameAt, to: at(s.ae.line, s.ae.ch - 1), text: name }, ...extras] });
+        editor.setCursor(at(nameAt.line, nameAt.ch + name.length - 1));
+        return;
+      }
+      const changes = [];
+      if (!name) { name = s.name; changes.push({ from: nameAt, to: at(s.a.line, close), text: name }); }
+      // the old \end{…}: same place, shifted when it shares the \begin line
+      const shift = s.bs.line === s.a.line ? close - (s.ae.ch - 1) : 0;
+      const bs = at(s.bs.line, s.bs.ch + shift), b = at(s.b.line, s.b.ch + shift);
+      if ((lines[bs.line] || "").slice(bs.ch, b.ch) === "\\end{" + s.name + "}") changes.push({ from: bs, to: b, text: "\\end{" + name + "}" });
+      if (changes.length) editor.transaction({ changes });
+    };
+    cm.on("vim-mode-change", done);
+    Vim.handleKey(cm, "i", "mapping");
+  }
+
+  // Undo until the note reads `text` again; if it can't get there, redo it all back.
+  rewind(editor, text) {
+    let k = 0;
+    while (editor.getValue() !== text && k < 100) {
+      const was = editor.getValue();
+      editor.undo();
+      k++;
+      if (editor.getValue() === was) break;
+    }
+    if (editor.getValue() === text) return true;
+    while (k-- > 0) editor.redo();
+    return false;
+  }
+}
+
+class LatexObjectsSettings extends PluginSettingTab {
+  constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
+  display() {
+    const { containerEl } = this, p = this.plugin, set = async (k, v) => { p.settings[k] = v; await p.saveSettings(); };
+    containerEl.empty();
+    if (!(window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim))
+      containerEl.createEl("p", { text: "Vim mode is off: the text objects need Settings → Editor → Vim key bindings, or the Vim Motions plugin. The commands work without it.", cls: "mod-warning" });
+    new Setting(containerEl).setName("Seek distance").setDesc("How many lines above or below the cursor an object or a command looks for the nearest maths, environment or bracket.")
+      .addText(t => t.setPlaceholder("50").setValue(String(p.settings.seekLines)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("seekLines", n); }));
+    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ jump to the next or previous maths, display maths, environment, parenthesis or brace.")
+      .addToggle(t => t.setValue(p.settings.jumps).onChange(v => { set("jumps", v); this.display(); }));
+    if (p.settings.jumps) new Setting(containerEl).setName("Repeat jumps with ; and ,").setDesc("After a jump, ; repeats it and , goes the other way, until the next f F t T.")
+      .addToggle(t => t.setValue(p.settings.repeatJumps).onChange(v => set("repeatJumps", v)));
+    new Setting(containerEl).setName("Bracket surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right. Needs the Vim Motions plugin.")
+      .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
+    new Setting(containerEl).setName("Flash").setDesc("Highlight what y, >, gU … acted on for a moment.")
+      .addToggle(t => t.setValue(p.settings.flash).onChange(v => { set("flash", v); this.display(); }));
+    if (p.settings.flash) new Setting(containerEl).setName("Flash duration").setDesc("In milliseconds.")
+      .addText(t => t.setPlaceholder("250").setValue(String(p.settings.flashMs)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("flashMs", n); }));
+  }
+}
+
+module.exports = LatexObjects;
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink };

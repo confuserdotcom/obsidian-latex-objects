@@ -1,0 +1,4 @@
+/* latex-objects: what y / > / gU hit, for a moment (like nvim highlight-on-yank).
+   The faint line colour is what shows when Live Preview renders the maths as a widget. */
+.latex-objects-flash { background-color: var(--text-highlight-bg); }
+.latex-objects-flash-line { background-color: color-mix(in srgb, var(--text-highlight-bg) 40%, transparent); }
