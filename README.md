@@ -2,7 +2,7 @@
 
 Vim text objects, jumps and editing commands for LaTeX in [Obsidian](https://obsidian.md): maths (`$…$`, `$$…$$`), environments (`\begin{…} … \end{…}`) and brackets (`( )`, `{ }`, `[ ]`, `\left( \right)`, `\{ \}`).
 
-![LaTeX Objects in Obsidian: dim, cinm, vib ie aM, ciB, ]m ; , and the commands](docs/demo.gif)
+![LaTeX Objects demo in Obsidian](docs/demo.gif)
 
 They work with every operator (`d c y > gU …`), in visual mode, with counts and with `.` repeat. Every object **seeks**: it takes the one around the cursor, or else the closest one above or below. So `dim` works even when the cursor is on the line before the maths.
 
