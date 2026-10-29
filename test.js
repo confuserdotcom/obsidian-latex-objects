@@ -507,10 +507,10 @@ t("cursor: toggle alone on its line → display keeps it on its letter", () => a
 
 // ─── settings ───
 const { cleanSettings, CONFIG } = require("./main.js").core;
-t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, flash: true, flashMs: 250 }));
+t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 }));
 t("settings: saved values kept, junk back to default", () => {
-  const c = cleanSettings({ seekLines: 20, jumps: false, flash: "yes", flashMs: NaN, other: 1 });
-  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, flash: true, flashMs: 250 });
+  const c = cleanSettings({ seekLines: 20, jumps: false, flash: "yes", flashMs: NaN, match: 0, other: 1 });
+  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 });
 });
 t("settings: numbers clamped and rounded", () => {
   assert.strictEqual(cleanSettings({ seekLines: 0 }).seekLines, 1);
@@ -626,6 +626,41 @@ t("prompt: names are letters, a trailing * only when allowed", () => {
   assert.ok(validName("align*", true));
   assert.ok(!validName(""));
   assert.strictEqual(unslash("\\frac"), "frac");
+});
+
+// ─── % ───
+const { delimAt, partner, matchTarget } = require("./main.js").core;
+t("%: \\begin ⇄ \\end, from any character of the token", () => {
+  const l = L("\\begin{a}\nx\n\\end{a}");
+  for (let ch = 0; ch < 9; ch++) assert.deepStrictEqual(partner(l, at(0, ch)), at(2, 0));
+  for (let ch = 0; ch < 7; ch++) assert.deepStrictEqual(partner(l, at(2, ch)), at(0, 0));
+  assert.strictEqual(partner(l, at(1, 0)), null);
+});
+t("%: \\left ⇄ \\right", () => {
+  const l = L("$\\left( x \\right)$");
+  assert.deepStrictEqual(partner(l, at(0, 3)), at(0, 10));
+  assert.deepStrictEqual(partner(l, at(0, 15)), at(0, 1));
+});
+t("%: a plain ( and \\big( are not ours", () => {
+  assert.strictEqual(partner(L("$(x)$"), at(0, 1)), null);
+  assert.strictEqual(partner(L("$\\big( x \\big)$"), at(0, 2)), null);
+});
+t("%: $ and $$", () => {
+  const l = L("a $x$ b\n$$\ny\n$$");
+  assert.deepStrictEqual(partner(l, at(0, 2)), at(0, 4));
+  assert.deepStrictEqual(partner(l, at(0, 4)), at(0, 2));
+  assert.deepStrictEqual(partner(l, at(1, 1)), at(3, 0));
+  assert.deepStrictEqual(partner(l, at(3, 1)), at(1, 0));
+});
+t("%: where it goes — normal, visual forward, operator", () => {
+  const l = L("$x$"), fwd = delimAt(l, at(0, 0)), back = delimAt(l, at(0, 2));
+  assert.deepStrictEqual(fwd, { here: [at(0, 0), at(0, 1)], there: [at(0, 2), at(0, 3)] });
+  assert.deepStrictEqual(matchTarget(fwd, false, false), at(0, 2));
+  assert.deepStrictEqual(matchTarget(back, false, false), at(0, 0));
+  assert.deepStrictEqual(matchTarget(fwd, true, false), [at(0, 0), at(0, 3)]);
+  assert.deepStrictEqual(matchTarget(back, true, false), [at(0, 0), at(0, 3)]);
+  const env = delimAt(L("\\begin{a}x\\end{a}"), at(0, 0));
+  assert.deepStrictEqual(matchTarget(env, false, true), at(0, 16));
 });
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }

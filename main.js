@@ -576,6 +576,25 @@ function around(spans, pos) {
   for (const s of spans) if (cmp(s.a, pos) <= 0 && cmp(pos, s.b) < 0 && (!best || cmp(s.a, best.a) > 0)) best = s;
   return best;
 }
+// %: the delimiter the cursor is on — \begin{…} / \end{…}, \left… / \right…, a $ / $$ —
+// as { here: [from, to), there: its partner's [from, to) }, or null (then % is Vim's).
+function delimAt(lines, pos) {
+  const on = (p, q) => cmp(p, pos) <= 0 && cmp(pos, q) < 0;
+  const lefts = bracketSpans(lines).filter(s => /^\\left/.test(slice(lines, s.a, s.ae)));
+  for (const s of [...envSpans(lines), ...lefts, ...mathSpans(lines)]) {
+    if (on(s.a, s.ae)) return { here: [s.a, s.ae], there: [s.bs, s.b] };
+    if (on(s.bs, s.b)) return { here: [s.bs, s.b], there: [s.a, s.ae] };
+  }
+  return null;
+}
+const partner = (lines, pos) => { const d = delimAt(lines, pos); return d && d.there[0]; };
+// Where % goes: after an operator, both delimiters and what is between (d% takes it all);
+// in visual mode going forward, the partner's last character; else its first.
+function matchTarget(d, op, visual) {
+  const [h, t] = [d.here, d.there], fwd = cmp(t[0], h[0]) > 0;
+  if (op) return fwd ? [h[0], t[1]] : [t[0], h[1]];
+  return visual && fwd ? at(t[1].line, t[1].ch - 1) : t[0];
+}
 
 // align ⇄ align*
 function starChanges(s) {
@@ -681,6 +700,7 @@ const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-$
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
 // ]C [C ask for a name; once it is typed, <LxGo> makes the move (as a ; would)
 const NAMED = [["]C", { forward: true }], ["[C", { forward: false }]], GO = [["<LxGo>", { forward: true }]];
+const MATCH = [["<LxPct>", {}]]; // the private key matchKey sends for % on our delimiters
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
@@ -799,11 +819,33 @@ function latexNamedPrompt(cm, head, args, vim, inputState) {
   });
   return null;
 }
+// % on one of our delimiters (only matchKey sends it). . replaying d% somewhere else: nothing.
+function latexMatch(cm, head, args, vim, inputState) {
+  const d = delimAt(lineArray(cm), at(head.line, head.ch));
+  if (!d) return null;
+  const op = !!(inputState && inputState.operator);
+  if (op) args.inclusive = false;
+  return matchTarget(d, op, !!vim.visualMode);
+}
+// % is caught here, in both Vims: on \begin \end, \left \right or $ $$ (no count typed:
+// 50% is Vim's) it becomes <LxPct>; anywhere else it goes on to Vim's own %.
+function matchKey(e, cm) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
+  if (e.key !== "%" || !active.match || !Vim || !vim || vim.insertMode || e.ctrlKey || e.metaKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
+  const st = vim.inputState;
+  if ((st.prefixRepeat || []).length || (st.motionRepeat || []).length || [].concat(st.keyBuffer || []).length) return false;
+  const head = vim.visualMode ? vim.sel.head : cm.getCursor();
+  if (!delimAt(lineArray(cm), at(head.line, head.ch))) return false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  Vim.handleKey(cm, "<LxPct>", "user");
+  return true;
+}
 // f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
   if (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt")) return; // typing a name
-  if (stockKey(e, cm)) return;
+  if (matchKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
 }
@@ -967,7 +1009,7 @@ function dispatchChanges(cm, changes) {
 
 // Idempotent: drop our keys, then add them (so they never pile up). The Vim object is looked
 // up fresh each time: Vim Motions deletes it when it unloads. `opts` says which groups are on.
-const OPTS = { jumps: true, repeatJumps: true, surround: true };
+const OPTS = { jumps: true, repeatJumps: true, surround: true, match: true };
 let active = OPTS; // the groups register() last turned on
 function register(opts = OPTS) {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
@@ -978,9 +1020,10 @@ function register(opts = OPTS) {
   Vim.defineMotion("latexJump", latexJump);
   Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
   Vim.defineMotion("latexNamedPrompt", latexNamedPrompt);
+  Vim.defineMotion("latexMatch", latexMatch);
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
   for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
-    ["latexNamedPrompt", opts.jumps ? NAMED : []]]) for (const [keys, args] of list) {
+    ["latexNamedPrompt", opts.jumps ? NAMED : []], ["latexMatch", opts.match ? MATCH : []]]) for (const [keys, args] of list) {
     dropKeys(Vim, keys);
     Vim.mapCommand(keys, "motion", motion, args);
   }
@@ -1001,13 +1044,13 @@ function dropKeys(Vim, keys) {
 }
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO]) dropKeys(Vim, keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
 }
 
-const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, flash: true, flashMs: 250 };
+const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 };
 // Saved data → settings, bad or missing values back to their default.
 function cleanSettings(data) {
   const d = Object.assign({}, DEFAULTS, data || {}), out = {};
@@ -1178,6 +1221,8 @@ class LatexObjectsSettings extends PluginSettingTab {
       .addToggle(t => t.setValue(p.settings.repeatJumps).onChange(v => set("repeatJumps", v)));
     new Setting(containerEl).setName("Bracket surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right. Needs the Vim Motions plugin.")
       .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
+    new Setting(containerEl).setName("Match with %").setDesc("% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.")
+      .addToggle(t => t.setValue(p.settings.match).onChange(v => set("match", v)));
     new Setting(containerEl).setName("Flash").setDesc("Highlight what y, >, gU … acted on for a moment.")
       .addToggle(t => t.setValue(p.settings.flash).onChange(v => { set("flash", v); this.display(); }));
     if (p.settings.flash) new Setting(containerEl).setName("Flash duration").setDesc("In milliseconds.")
@@ -1186,4 +1231,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget };

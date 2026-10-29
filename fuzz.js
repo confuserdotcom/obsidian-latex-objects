@@ -84,6 +84,17 @@ try {
       const nested = (cmp(x.a, y.a) <= 0 && cmp(y.b, x.b) <= 0) || (cmp(y.a, x.a) <= 0 && cmp(x.b, y.b) <= 0);
       assert(disjoint || nested, "crossing commands / arguments");
     }
+    // %: from any delimiter, its partner leads back to it
+    current = `doc ${d} partner ${JSON.stringify(src)}`;
+    for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {
+      const d1 = C.delimAt(lines, at(l, ch));
+      if (!d1) continue;
+      current = `doc ${d} partner @${l}:${ch} ${JSON.stringify(src)}`;
+      const d2 = C.delimAt(lines, d1.there[0]);
+      assert(d2, "partner is not a delimiter");
+      assert.deepStrictEqual([d2.here, d2.there], [d1.there, d1.here], "partner does not lead back");
+      stats.picks++;
+    }
     for (const obj of ["math", "env", "paren", "brace", "square"]) {
       current = `doc ${d} ${obj} ${JSON.stringify(src)}`;
       const spans = C.SPANS[obj](lines);
