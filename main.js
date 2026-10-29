@@ -915,7 +915,13 @@ function flashLater(cm, r) {
 // ─── Match highlight (like matchparen) ────────────────────────────────────────
 // The cursor on \begin{…} \end{…}, \left… \right… or $ / $$ marks it and its partner.
 // Only lines that could hold one get the full scan; big notes are skipped.
-const mayBeDelim = (line, ch) => line[ch] === "$" || /\\(begin|end|left|right)/.test(line);
+// \begin{name} / \left( count as a whole, so the cursor anywhere on one passes (delimAt decides).
+const DELIM_TOKEN = /\\(?:begin|end)(?:\{[^}]*\})?|\\(?:left|right)\s*(?:([[\]])\s*\\!\s*\\(?:left|right)\s*\1|\\[a-zA-Z]+|\\?.)?/g;
+function mayBeDelim(line, ch) {
+  if (line[ch] === "$") return true;
+  for (const m of line.matchAll(DELIM_TOKEN)) if (ch >= m.index && ch < m.index + m[0].length) return true;
+  return false;
+}
 function matchDeco(view) {
   const doc = view.state.doc;
   if (!CONFIG.highlight || doc.lines > 5000) return CMView.Decoration.none;
@@ -927,8 +933,11 @@ function matchDeco(view) {
   return CMView.Decoration.set([d.here, d.there].map(([p, q]) => mark.range(off(p), off(q))), true);
 }
 const matchPlugin = CMView && CMView.ViewPlugin.fromClass(class {
-  constructor(view) { this.decorations = matchDeco(view); }
-  update(u) { if (u.docChanged || u.selectionSet) this.decorations = matchDeco(u.view); }
+  constructor(view) { this.decorations = matchDeco(view); this.on = CONFIG.highlight; }
+  // The setting can flip with no cursor move (updateOptions): rebuild then too.
+  update(u) {
+    if (u.docChanged || u.selectionSet || this.on !== CONFIG.highlight) { this.on = CONFIG.highlight; this.decorations = matchDeco(u.view); }
+  }
 }, { decorations: v => v.decorations });
 
 // ds / cs go through Vim Motions' own "surroundAction" (keys s<character> after an operator):
@@ -1127,6 +1136,7 @@ class LatexObjects extends Plugin {
     this.settings = cleanSettings(this.settings);
     await this.saveData(this.settings);
     Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs, highlight: this.settings.highlight });
+    this.app.workspace.updateOptions(); // re-run editor extensions so the highlight setting applies now
     this.applyKeys();
   }
   applyKeys() { register(this.settings); }

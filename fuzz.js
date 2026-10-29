@@ -89,6 +89,7 @@ try {
     for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {
       const d1 = C.delimAt(lines, at(l, ch));
       if (!d1) continue;
+      assert(C.mayBeDelim(lines[l], ch), "mayBeDelim rejects a delimiter position");
       current = `doc ${d} partner @${l}:${ch} ${JSON.stringify(src)}`;
       const d2 = C.delimAt(lines, d1.there[0]);
       assert(d2, "partner is not a delimiter");

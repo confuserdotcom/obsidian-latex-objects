@@ -669,6 +669,11 @@ t("highlight: cheap test before the full scan", () => {
   assert.ok(mayBeDelim("a $x$", 2));
   assert.ok(mayBeDelim("\\begin{a}", 3));
   assert.ok(!mayBeDelim("plain (text)", 6));
+  const b = "xx \\begin{align} yy zzzz";
+  assert.ok(!mayBeDelim(b, 0) && !mayBeDelim(b, 20) && !mayBeDelim(b, 2) && !mayBeDelim(b, 16)); // far from it
+  for (const i of [3, 4, 7, 9, 10, 12, 14]) assert.ok(mayBeDelim(b, i), "begin at " + i); // \, b, n, {, name, }
+  for (const [l, i] of [["\\end{x}", 0], ["\\end{x}", 5], ["a\\left(b", 1], ["a\\left(b", 6], ["\\right)", 6], ["\\left\\{", 6], ["\\left.", 5]]) assert.ok(mayBeDelim(l, i), l + i);
+  assert.ok(!mayBeDelim("\\left(b", 7));
 });
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
