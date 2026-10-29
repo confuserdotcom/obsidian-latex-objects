@@ -6,14 +6,17 @@
 //   ib ab   inb anb   ilb alb    ( )  \left( \right)          (n = next, l = last)
 //   iB aB   inB anB   ilB alB    { }  \{ \}  \left\{ \right\}
 //   ir ar   inr anr   ilr alr    [ ]  \left[ \right]  ⟦a; b⟧ intervals
+//   ic ac   inc anc   ilc alc    \name{…}[…]{…}: ic = one argument (on the name: the first), ac = the command
 // Every object SEEKS like mini.ai: the one around the cursor, else the CLOSEST one above or
 // below, within 50 lines. In visual mode, repeating one (vie ie ie) grows to the enclosing one.
 //   ]m [m   ]M [M   ]e [e   ]( [(   ]{ [{   jump to the next / previous maths, \begin, ( ), { } (counts, d]m …)
 //   ; ,   repeat the last of those jumps (, the other way) until an f F t T takes them back
+//   ]c [c   ]a [a   ]C [C   next / previous command, argument (lands inside), command by name (asks for it)
+//   %   on \begin \end, \left \right, $ $$: to the partner (marked while the cursor is on one); else Vim's %
 // Counts: 3iB = 3rd enclosing, 3inB / 3ilB = 3rd next / previous at the same level (nested
 // ones skipped), with operators too (d2iB, and . replays it). In visual with a selection,
 // inB / ilB step INTO it (first / last block inside), iB steps back out.
-//   ds cs on b B r ( ) { } [ ]    bracket surround that seeks and knows \left \right
+//   ds cs on b B r ( ) { } [ ] c    surround that seeks, knows \left \right, and dsc / csc commands
 // y > gU … flash what they hit for a moment. Plus editing commands (unwrap, delete, toggle,
 // align, rename, star, size) to bind to keys or call from a vimrc with :obcommand.
 //

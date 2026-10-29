@@ -19,7 +19,7 @@ const ev = async expr => (await call("Runtime.evaluate", { expression: expr, awa
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function key(k) {
-  const special = { "<Esc>": ["Escape", 27], "<Down>": ["ArrowDown", 40] }[k];
+  const special = { "<Esc>": ["Escape", 27], "<Down>": ["ArrowDown", 40], "<CR>": ["Enter", 13], "<Tab>": ["Tab", 9] }[k];
   if (special) {
     for (const type of ["keyDown", "keyUp"]) await call("Input.dispatchKeyEvent", { type, key: special[0], code: special[0], windowsVirtualKeyCode: special[1] });
   } else {
@@ -28,7 +28,7 @@ async function key(k) {
   }
   await sleep(50);
 }
-const keys = s => s.match(/<Esc>|<Down>|./gu);
+const keys = s => s.match(/<Esc>|<Down>|<CR>|<Tab>|./gu);
 const ed = "app.workspace.activeEditor.editor";
 
 await ev(`(async()=>{const p='zz-latex-objects-e2e.md';const f=app.vault.getAbstractFileByPath(p)||await app.vault.create(p,'');
@@ -271,6 +271,43 @@ await t("dim does not leave a flash behind", "a $x$", [0, 0], "dim", "a $$");
 await t("Space l r then u restores in one step", "\\begin{align}\nx\n\\end{align}", [1, 0], " lrgather<Esc>u", "\\begin{align}\nx\n\\end{align}");
 await t("Space l r: u stops right before the rename", "kk\n\\begin{a}x\\end{a}", [0, 0], "x lrb<Esc>u", "k\n\\begin{a}x\\end{a}");
 await t("Space l r with other typing keeps it", "\\begin{a}\nx\n\\end{a}", [1, 0], " lrb<Down>z<Esc>", "\\begin{b}\nxz\n\\end{b}");
+
+// commands (1.1): ic ac, ]c ]a ]C, %, the highlight, dsc csc, Space l x / c / w
+await t("cic in the numerator", "$\\frac{a}{b}$", [0, 7], "cicX<Esc>", "$\\frac{X}{b}$");
+await t("cic on the name takes the first argument", "$\\frac{a}{b}$", [0, 2], "cicX<Esc>", "$\\frac{X}{b}$");
+await t("dac", "$x + \\sqrt[n]{y}$", [0, 11], "dac", "$x + $");
+await t("vic ic grows to the enclosing argument", "$\\frac{\\sqrt{x}}{y}$", [0, 13], "vicic", { sel: "\\sqrt{x}" });
+await t("]a ]a lands in the denominator", "$\\frac{a}{b}$", [0, 0], "]a]ax", "$\\frac{a}{}$");
+await t("3]c skips commands without arguments", "$\\alpha \\sqrt{a} \\sqrt{b} \\sqrt{c}$", [0, 0], "3]cx", "$\\alpha \\sqrt{a} \\sqrt{b} sqrt{c}$");
+await t("]C frac Enter", "$a \\sqrt{x} \\frac{1}{2}$", [0, 0], "]Cfrac<CR>x", "$a \\sqrt{x} frac{1}{2}$");
+await t("]C then ; and ,", "$\\frac{a}{b} \\frac{c}{d}$", [0, 0], "]Cfrac<CR>;,x", "$frac{a}{b} \\frac{c}{d}$");
+await t("]C then ;", "$\\frac{a}{b} \\frac{c}{d}$", [0, 0], "]Cfrac<CR>;x", "$\\frac{a}{b} frac{c}{d}$");
+await t("]C Tab completes from the note", "$\\mathbb{R} \\mathcal{C}$", [0, 0], "]Cmathc<Tab><CR>x", "$\\mathbb{R} mathcal{C}$");
+await t("]C Esc cancels", "$\\frac{a}{b}$", [0, 0], "]Cfrac<Esc>x", "\\frac{a}{b}$");
+await t("% \\begin → \\end", "\\begin{a}\nx\n\\end{a}", [0, 3], "%x", "\\begin{a}\nx\nend{a}");
+await t("% \\end → \\begin", "\\begin{a}\nx\n\\end{a}", [2, 2], "%x", "begin{a}\nx\n\\end{a}");
+await t("% on $$", "$$\nx\n$$", [0, 0], "%x", "$$\nx\n$");
+await t("d% on \\left", "$\\left( x \\right) y$", [0, 2], "d%", "$ y$");
+await t("% on a plain ( stays Vim's", "f(x) y", [0, 1], "%x", "f(x y");
+await t("dsc", "$\\mathbf{x}$", [0, 9], "dsc", "$x$");
+await t("dsc keeps the argument under the cursor", "$\\frac{a}{b}$", [0, 10], "dsc", "$b$");
+await t("csc then .", "$\\mathbf{x} \\mathbf{y}$", [0, 2], "cscmathcal<CR>W.", "$\\mathcal{x} \\mathcal{y}$");
+await t("Space l x deletes the command", "$\\mathbf{x}$", [0, 3], " lx", "$x$");
+await t("Space l c renames the command", "$\\mathbf{x}$", [0, 3], " lcmathcal<CR>", "$\\mathcal{x}$");
+await t("Space l w wraps the word", "$x + y$", [0, 1], " lwmathbf<CR>", "$\\mathbf{x} + y$");
+await t("Space l w wraps a visual selection", "$a+b$", [0, 1], "vll lwhat<CR>", "$\\hat{a+b}$");
+{
+  await scratch();
+  await ev(`(()=>{${ed}.setValue(${JSON.stringify("\\begin{a}\nx\n\\end{a}")});${ed}.focus();${ed}.setCursor({line:0,ch:2})})()`);
+  await sleep(200);
+  const lit = await ev(`[...document.querySelectorAll(".workspace-leaf.mod-active .latex-objects-match")].map(e=>e.textContent).join("")`);
+  await ev(`${ed}.setCursor({line:1,ch:0})`);
+  await sleep(200);
+  const gone = await ev(`document.querySelectorAll(".workspace-leaf.mod-active .latex-objects-match").length`);
+  const ok = lit === "\\begin{a}\\end{a}" && gone === 0;
+  if (!ok) fails++;
+  console.log(`${ok ? "PASS" : "FAIL"}  highlight marks \\begin and \\end, then clears${ok ? "" : ` (lit ${JSON.stringify(lit)}, left ${gone})`}`);
+}
 
 // regressions: built-ins untouched
 await t("dd", "a\nb\nc", [1, 0], "dd", "a\nc");
