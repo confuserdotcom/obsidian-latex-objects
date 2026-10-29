@@ -161,8 +161,81 @@ function bracketSpans(lines) {
   return out;
 }
 
+// \name{…}[…]{…} inside maths: { kind: "command", name, a, ae, bs, b, args }, bs = b so that
+// ac (range around) is the whole command; args are argument spans { kind: "arg", opt, a, ae,
+// bs, b, cmd } shaped like a bracket span. Only braced groups count, a […] only when a {…}
+// follows it (\sqrt[n]{x} yes, \mathbb{R}[x] no). The sized delimiters and \begin \end are
+// other objects', not commands.
+const NOT_COMMANDS = /^(begin|end|left|right|middle|[bB]igg?[lrm]?)$/;
+// The first non-space position from p before `end`, newlines and a "> " line prefix included.
+function skipSpace(lines, p, end) {
+  for (let r = p.line; r <= end.line; r++) {
+    const line = lines[r], to = r === end.line ? end.ch : line.length;
+    for (let i = r === p.line ? p.ch : prefixOf(line).length; i < to; i++) if (!/\s/.test(line[i])) return at(r, i);
+  }
+  return null;
+}
+// End of the { or [ group opening at p, before `end`, or null when it doesn't close. Braces
+// nest; \x is skipped; a […] ends at a ] outside braces and never takes a } it didn't open.
+function groupEnd(lines, p, end) {
+  const sq = lines[p.line][p.ch] === "[";
+  let depth = 0;
+  for (let r = p.line; r <= end.line; r++) {
+    const line = lines[r], to = r === end.line ? end.ch : line.length;
+    for (let i = r === p.line ? p.ch : 0; i < to; i++) {
+      const c = line[i];
+      if (c === "\\") { i++; continue; }
+      if (c === "{") depth++;
+      else if (c === "}") { if (--depth < 0) return null; if (!sq && !depth) return at(r, i + 1); }
+      else if (sq && c === "]" && !depth) return at(r, i + 1);
+    }
+  }
+  return null;
+}
+function commandSpans(lines) {
+  const out = [];
+  for (const m of mathSpans(lines)) {
+    const end = m.bs;
+    for (let r = m.ae.line; r <= end.line; r++) {
+      const line = lines[r], to = r === end.line ? end.ch : line.length;
+      for (let i = r === m.ae.line ? m.ae.ch : 0; i < to; i++) {
+        if (line[i] !== "\\") continue;
+        const name = /^[A-Za-z]+/.exec(line.slice(i + 1, to));
+        if (!name) { i++; continue; }
+        const a = at(r, i), ae = at(r, i + 1 + name[0].length);
+        i = ae.ch - 1; // carry on inside the arguments: nested commands are found too
+        if (NOT_COMMANDS.test(name[0])) continue;
+        const args = [];
+        let p = ae, opts = [];
+        for (;;) {
+          const q = skipSpace(lines, p, end), c = q && lines[q.line][q.ch];
+          if (c !== "{" && c !== "[") break;
+          const e = groupEnd(lines, q, end);
+          if (!e) break;
+          const g = { kind: "arg", opt: c === "[", a: q, ae: at(q.line, q.ch + 1), bs: at(e.line, e.ch - 1), b: e };
+          if (g.opt) opts.push(g);
+          else { args.push(...opts, g); opts = []; }
+          p = e;
+        }
+        const b = args.length ? args[args.length - 1].b : ae, s = { kind: "command", name: name[0], a, ae, bs: b, b, args };
+        for (const g of args) g.cmd = s;
+        out.push(s);
+      }
+    }
+  }
+  return out;
+}
+const argSpans = lines => commandSpans(lines).flatMap(s => s.args);
+const namedSpans = (lines, name) => commandSpans(lines).filter(s => s.name === name);
+// For the prompt's Tab: the names in the note's maths, most used first.
+function commandNames(lines) {
+  const n = new Map();
+  for (const s of commandSpans(lines)) n.set(s.name, (n.get(s.name) || 0) + 1);
+  return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).map(([k]) => k);
+}
 const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
-const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("[") };
+const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("["),
+  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans };
 
 // Is span s a better "nearest" than t for the cursor? Compared in order:
 //   1. lines between the cursor and the span's nearest edge (first char below, last char above)
@@ -1020,4 +1093,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames };

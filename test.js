@@ -552,5 +552,34 @@ t("align in a list item indents under the item", () => {
   assert.strictEqual(apply(l, alignChanges(l, mathSpans(l)[0])), "1.\n   $$\n   \\begin{align}\n   x &= 1\n   \\end{align}\n   $$");
 });
 
+// ─── commands (1.1) ───
+const { commandSpans, argSpans, namedSpans, commandNames } = require("./main.js").core;
+const cmds = s => { const l = L(s); return commandSpans(l).map(c => [c.name, ...c.args.map(g => (g.opt ? "[" : "{") + text(l, g.ae, g.bs))]); };
+t("commands: \\frac{a}{b} has two arguments", () => assert.deepStrictEqual(cmds("$\\frac{a}{b}$"), [["frac", "{a", "{b"]]));
+t("commands: optional argument before a brace", () => assert.deepStrictEqual(cmds("$\\sqrt[n]{x}$"), [["sqrt", "[n", "{x"]]));
+t("commands: [x] after the last brace is not an argument", () => assert.deepStrictEqual(cmds("$\\mathbb{R}[x]$"), [["mathbb", "{R"]]));
+t("commands: no arguments", () => assert.deepStrictEqual(cmds("$\\alpha [0, 1]$"), [["alpha"]]));
+t("commands: spaces and a newline between groups", () => assert.deepStrictEqual(cmds("$$\n\\frac {a}\n{b}\n$$"), [["frac", "{a", "{b"]]));
+t("commands: groups on callout lines skip the > prefix", () => assert.deepStrictEqual(cmds("> $$\n> \\frac{a}\n> {b}\n> $$"), [["frac", "{a", "{b"]]));
+t("commands: nested, in document order", () => assert.deepStrictEqual(cmds("$\\frac{\\sqrt{x}}{y}$"), [["frac", "{\\sqrt{x}", "{y"], ["sqrt", "{x"]]));
+t("commands: \\{ \\} are not braces", () => assert.deepStrictEqual(cmds("$\\mathbf{\\{a\\}}$"), [["mathbf", "{\\{a\\}"]]));
+t("commands: \\begin \\left \\big are not commands", () => assert.deepStrictEqual(cmds("$\\left( \\bigl[ x \\bigr] \\right)$\n$$\n\\begin{a}\n\\end{a}\n$$"), []));
+t("commands: outside maths is text", () => assert.deepStrictEqual(cmds("\\textbf{a} $\\mathbf{b}$"), [["mathbf", "{b"]]));
+t("commands: an unclosed group ends the arguments", () => assert.deepStrictEqual(cmds("$\\frac{a}{b$"), [["frac", "{a"]]));
+t("commands: a [ group never takes the } of the enclosing one", () => assert.deepStrictEqual(cmds("$\\frac{\\sqrt[}]{x}$"), [["frac", "{\\sqrt["], ["sqrt"]]));
+t("commands: args point back, b ends the last one, bs = b", () => {
+  const l = L("$\\frac{a}{b} x$"), [c] = commandSpans(l);
+  assert.ok(c.args.every(g => g.cmd === c));
+  assert.strictEqual(text(l, c.a, c.b), "\\frac{a}{b}");
+  assert.deepStrictEqual(c.bs, c.b);
+});
+t("argSpans: every argument of every command", () => {
+  const l = L("$\\frac{a}{\\sqrt{b}}$");
+  assert.deepStrictEqual(argSpans(l).map(g => text(l, g.a, g.b)), ["{a}", "{\\sqrt{b}}", "{b}"]);
+});
+t("SPANS.command skips commands without arguments", () => assert.deepStrictEqual(SPANS.command(L("$\\alpha \\hat{x}$")).map(c => c.name), ["hat"]));
+t("namedSpans: by name, with or without arguments", () => assert.deepStrictEqual(namedSpans(L("$\\alpha \\frac{a}{b} \\alpha$"), "alpha").map(c => c.a.ch), [1, 20]));
+t("commandNames: most frequent first, then alphabetical", () => assert.deepStrictEqual(commandNames(L("$\\frac{a}{b} \\beta \\frac{c}{d} \\alpha$")), ["frac", "alpha", "beta"]));
+
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);
