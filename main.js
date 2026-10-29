@@ -798,6 +798,10 @@ function latexObj(cm, head, args, vim, inputState) {
 // Visual mode with a selection (more than one character, linewise, or the one we just made)
 // as {start, last}, else null. A plain one-character selection is where `v` left you, so the
 // object seeks as usual; but the b of (b) that vib / inb selected still grows / steps.
+// The key being handled: was Vim in visual mode, where was the cursor. A mapped :obcommand
+// runs inside it, after Vim has changed both: a vnoremap'd one has left visual already, and
+// Vim Motions puts the last visual selection back even from normal mode (stale, anywhere).
+let keyAt = null;
 let madeSel = null; // "line:ch" of the last one-character visual object we returned
 function selection(lines, vim) {
   const { anchor, head } = vim.sel;
@@ -874,6 +878,7 @@ function matchKey(e, cm) {
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
   if (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt")) return; // typing a name
+  if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; setTimeout(() => (keyAt = null), 0); }
   if (matchKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
@@ -1138,6 +1143,14 @@ function cleanSettings(data) {
   return out;
 }
 
+// Run from a normal-mode key, a command finds a selection only if Vim Motions' :obcommand put
+// the last visual one back: drop it, the cursor goes back where the key was pressed.
+function unstale(editor) {
+  const cm = vimAdapter(editor), vim = cm && cm.state && cm.state.vim;
+  if (!keyAt || keyAt.visual || !vim || vim.visualMode || !editor.somethingSelected()) return;
+  editor.setCursor(keyAt.cur);
+}
+
 class LatexObjects extends Plugin {
   async onload() {
     this.patched = [];
@@ -1149,7 +1162,7 @@ class LatexObjects extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => { this.patchReloads(); this.applyKeys(); }));
     this.registerDomEvent(window, "keydown", e => onKeydown(e, this.app.workspace.activeEditor && vimAdapter(this.app.workspace.activeEditor.editor)), true);
 
-    const cmd = (id, name, fn) => this.addCommand({ id, name, editorCallback: editor => fn(editor) });
+    const cmd = (id, name, fn) => this.addCommand({ id, name, editorCallback: editor => { unstale(editor); fn(editor); } });
     cmd("unwrap-math", "Unwrap maths (delete $ / $$, keep the maths)", ed => this.edit(ed, "math", unwrapChanges));
     cmd("delete-math", "Delete maths with its $ / $$", ed => this.edit(ed, "math", deleteChanges));
     cmd("toggle-math", "Toggle inline / display maths", ed => this.edit(ed, "math", toggleChanges));
@@ -1184,7 +1197,7 @@ class LatexObjects extends Plugin {
       const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
       if (!cmp(from, to)) {
         let w = null;
-        try { w = lastVisual(cm, from, lines); } catch (e) {} // private Vim state: never let it break the command
+        if (keyAt && keyAt.visual) try { w = lastVisual(cm, from, lines); } catch (e) {} // private Vim state: never let it break the command
         w = w || wordAt(lines, from);
         if (!w) return new Notice("Nothing to wrap: select text or put the cursor on a word");
         [from, to] = w;

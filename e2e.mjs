@@ -20,6 +20,7 @@ const ev = async expr => (await call("Runtime.evaluate", { expression: expr, awa
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function key(k) {
+  await scratch(); // checked before every key: the active note can change mid-case, never type into another
   const special = { "<Esc>": ["Escape", 27], "<Down>": ["ArrowDown", 40], "<CR>": ["Enter", 13], "<Tab>": ["Tab", 9] }[k];
   if (special) {
     for (const type of ["keyDown", "keyUp"]) await call("Input.dispatchKeyEvent", { type, key: special[0], code: special[0], windowsVirtualKeyCode: special[1] });
@@ -297,6 +298,9 @@ await t("Space l x deletes the command", "$\\mathbf{x}$", [0, 3], " lx", "$x$");
 await t("Space l c renames the command", "$\\mathbf{x}$", [0, 3], " lcmathcal<CR>", "$\\mathcal{x}$");
 await t("Space l w wraps the word", "$x + y$", [0, 1], " lwmathbf<CR>", "$\\mathbf{x} + y$");
 await t("Space l w wraps a visual selection", "$a+b$", [0, 1], "vll lwhat<CR>", "$\\hat{a+b}$");
+await t("Space l w after a visual selection left with Esc wraps the word", "$a+b$", [0, 1], "vll<Esc> lwhat<CR>", "$a+\\hat{b}$");
+await t("Space l m after a visual selection elsewhere acts at the cursor", "$a+b$ and $c$", [0, 1], "vll<Esc>9l lm", "$a+b$ and c");
+await t("Space l w after a visual selection elsewhere wraps the word at the cursor", "$a+b$ and $c$", [0, 1], "vll<Esc>8l lwhat<CR>", "$a+b$ and $\\hat{c}$");
 {
   await scratch();
   await ev(`(()=>{${ed}.setValue(${JSON.stringify("\\begin{a}\nx\n\\end{a}")});${ed}.focus();${ed}.setCursor({line:0,ch:2})})()`);
