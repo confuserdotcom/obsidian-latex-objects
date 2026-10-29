@@ -2,3 +2,6 @@
    The faint line colour is what shows when Live Preview renders the maths as a widget. */
 .latex-objects-flash { background-color: var(--text-highlight-bg); }
 .latex-objects-flash-line { background-color: color-mix(in srgb, var(--text-highlight-bg) 40%, transparent); }
+
+/* ]C [C, csc and Wrap in command: the name prompt at the cursor */
+.latex-objects-prompt { position: fixed; z-index: var(--layer-popover); width: 14em; padding: 2px 6px; font-family: var(--font-monospace); font-size: var(--font-ui-small); color: var(--text-normal); background: var(--background-primary); border: 1px solid var(--interactive-accent); border-radius: var(--radius-s); }

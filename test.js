@@ -611,5 +611,22 @@ t("]a lands inside the next argument, [a inside the previous one", () => {
 t("]c counts commands with arguments only", () => assert.strictEqual(jump(spansFor("command", L("$\\alpha \\hat{x} \\bar{y}$")), at(0, 0), true, 2).name, "bar"));
 t("spansFor named: every \\name", () => assert.deepStrictEqual(spansFor("named", L("$\\hat{x} \\frac{a}{b} \\frac{c}{d}$"), "frac").map(s => s.a.ch), [9, 21]));
 
+// ─── name prompt helpers ───
+const { completions, commonPrefix, validName, unslash } = require("./main.js").core;
+t("prompt: completions ignore a leading backslash", () => assert.deepStrictEqual(completions("\\ma", ["frac", "mathbb", "mathcal"]), ["mathbb", "mathcal"]));
+t("prompt: longest common prefix", () => {
+  assert.strictEqual(commonPrefix(["mathbb", "mathcal"]), "math");
+  assert.strictEqual(commonPrefix(["frac"]), "frac");
+  assert.strictEqual(commonPrefix([]), "");
+});
+t("prompt: names are letters, a trailing * only when allowed", () => {
+  assert.ok(validName("\\frac"));
+  assert.ok(!validName("fr ac"));
+  assert.ok(!validName("align*"));
+  assert.ok(validName("align*", true));
+  assert.ok(!validName(""));
+  assert.strictEqual(unslash("\\frac"), "frac");
+});
+
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);

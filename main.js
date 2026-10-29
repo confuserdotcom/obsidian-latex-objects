@@ -679,6 +679,8 @@ const OBJ_KEYS = "mMebBrc";
 // the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
 const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
+// ]C [C ask for a name; once it is typed, <LxGo> makes the move (as a ; would)
+const NAMED = [["]C", { forward: true }], ["[C", { forward: false }]], GO = [["<LxGo>", { forward: true }]];
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
@@ -782,9 +784,25 @@ const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, n
 function repeatJump(orig) {
   return (cm, head, args, vim, inputState) => lastJump ? againJump(cm, head, args) : orig(cm, head, args, vim, inputState);
 }
+// ]C [C: ask for a name, then jump like ]c to the next / previous \name; ; , repeat it.
+// The prompt answers after this motion has returned (null: nothing moves yet), so the move
+// is <LxGo>, with the count, in whatever mode Vim is in then (normal or visual).
+function latexNamedPrompt(cm, head, args, vim, inputState) {
+  if (inputState && inputState.operator) { new Notice("]C and [C work in normal and visual mode"); return null; }
+  const count = args.repeatIsExplicit ? args.repeat : 0;
+  promptName(cm.cm6, { placeholder: (args.forward ? "]C" : "[C") + "  command name", names: commandNames(lineArray(cm)) }).then(name => {
+    const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+    if (!name || !Vim) return;
+    lastJump = { obj: "named", name, forward: args.forward };
+    for (const k of count ? String(count) : "") Vim.handleKey(cm, k, "user");
+    Vim.handleKey(cm, "<LxGo>", "user");
+  });
+  return null;
+}
 // f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
+  if (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt")) return; // typing a name
   if (stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
@@ -885,6 +903,62 @@ function nextKey(cb) {
   };
   window.addEventListener("keydown", on, true);
 }
+// ─── the name prompt (]C [C, csc, Wrap in command) ────────────────────────────
+// What was typed, a leading \ ignored; the names it completes to; their common start; and
+// whether it is a command name (letters, a trailing * when `star`: csc on align → align*).
+const unslash = s => s.replace(/^\\/, "");
+const completions = (typed, names) => names.filter(n => n.startsWith(unslash(typed)));
+function commonPrefix(list) {
+  if (!list.length) return "";
+  let p = list[0];
+  for (const s of list) while (!s.startsWith(p)) p = p.slice(0, -1);
+  return p;
+}
+const validName = (typed, star = false) => (star ? /^[A-Za-z]+\*?$/ : /^[A-Za-z]+$/).test(unslash(typed.trim()));
+// A one-line input at the cursor. Tab completes to the common start of the names, then
+// cycles them (Shift-Tab back); Enter accepts; Esc, an empty Enter or leaving it → null.
+// Its keys never reach Vim. Opened after the current key is handled (Vim is mid-key now).
+function promptName(view, { placeholder, names, star = false }) {
+  return new Promise(done => {
+    if (!view || typeof document === "undefined") return done(null);
+    setTimeout(() => {
+      const c = view.coordsAtPos(view.state.selection.main.head) || { left: 0, bottom: 0 };
+      const input = document.createElement("input");
+      input.className = "latex-objects-prompt";
+      input.placeholder = placeholder;
+      input.style.left = c.left + "px";
+      input.style.top = c.bottom + 2 + "px";
+      let cycle = null, finished = false;
+      const finish = value => {
+        if (finished) return;
+        finished = true;
+        input.remove();
+        view.focus();
+        if (value === null || !unslash(value.trim())) return done(null);
+        if (!validName(value, star)) { new Notice(`Not a command name: ${value}`); return done(null); }
+        done(unslash(value.trim()));
+      };
+      input.addEventListener("keydown", e => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); finish(input.value); }
+        else if (e.key === "Escape") { e.preventDefault(); finish(null); }
+        else if (e.key === "Tab") {
+          e.preventDefault();
+          if (!cycle) {
+            const list = completions(input.value, names), p = commonPrefix(list);
+            if (!list.length) return;
+            if (p.length > unslash(input.value).length) { input.value = p; return; }
+            cycle = { list, k: e.shiftKey ? list.length - 1 : 0 };
+          } else cycle.k = (cycle.k + (e.shiftKey ? -1 : 1) + cycle.list.length) % cycle.list.length;
+          input.value = cycle.list[cycle.k];
+        } else cycle = null;
+      });
+      input.addEventListener("blur", () => finish(null));
+      document.body.appendChild(input);
+      input.focus();
+    }, 0);
+  });
+}
 // One transaction = one undo step.
 function dispatchChanges(cm, changes) {
   const view = cm.cm6, off = p => cm.indexFromPos(p);
@@ -903,8 +977,10 @@ function register(opts = OPTS) {
   Vim.defineMotion("latexObj", latexObj);
   Vim.defineMotion("latexJump", latexJump);
   Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
+  Vim.defineMotion("latexNamedPrompt", latexNamedPrompt);
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
-  for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", repeats]]) for (const [keys, args] of list) {
+  for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
+    ["latexNamedPrompt", opts.jumps ? NAMED : []]]) for (const [keys, args] of list) {
     dropKeys(Vim, keys);
     Vim.mapCommand(keys, "motion", motion, args);
   }
@@ -925,7 +1001,7 @@ function dropKeys(Vim, keys) {
 }
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS]) dropKeys(Vim, keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
@@ -1110,4 +1186,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName };
