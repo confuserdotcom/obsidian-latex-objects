@@ -141,7 +141,7 @@ Until it is in the community plugins list, either:
 
 ## Development
 
-No build step: `main.js` is the plugin.
+No build step: `main.js` is the plugin. To release, bump the version in `manifest.json`, `package.json` and `versions.json`, then push a tag equal to it (`git tag 1.2.0 && git push origin 1.2.0`): the release workflow tests, attests and publishes `main.js`, `manifest.json` and `styles.css`.
 
 ```sh
 npm test          # unit tests + property tests on 1000 random notes
