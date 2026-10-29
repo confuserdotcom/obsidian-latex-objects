@@ -19,6 +19,10 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 | `iB` `aB` | braces `{ }`, `\{ \}`, `\left\{ \right\}` |
 | `ir` `ar` | square brackets `[ ]`, `\left[ \right]`, and `⟦a; b⟧` intervals |
 | `ic` `ac` | command `\frac{a}{b}`, `\sqrt[n]{x}`: `ic` is one argument (on the name: the first), `ac` the whole command |
+| `i^` `a^` | superscript `x^{n+1}`, `x^2`, `x^\alpha` (in maths): `i^` is `n+1`, `a^` is `^{n+1}` |
+| `i_` `a_` | subscript, the same with `_` |
+| `i&` `a&` | cell of `align`, `pmatrix`, `cases`, `array` …: `i&` is its text, `a&` takes one `&` too, so `da&` leaves a clean row |
+| `iR` `aR` | row of the same, up to `\\`: `aR` takes its `\\` (a row alone on its line: the line, like `dd`) |
 
 `i` is the inside, `a` includes the delimiters. Put `n` or `l` in the middle for the **next** or **last** one: `dinm` deletes the inside of the next maths, `cilB` changes the inside of the previous braces.
 
@@ -41,6 +45,12 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 | `]C` `[C` | command by name: type it (Tab completes from the note, Esc cancels), then Enter |
 
 They are motions: counts, operators (`d]m`) and visual mode work. After a jump, `;` repeats it and `,` goes the other way, until the next `f F t T`. `]C` `[C` work in normal and visual mode; `;` `,` repeat them too.
+
+## Swap
+
+- `>,` / `<,` swap the `{ }` argument under the cursor with the next / previous one of its command: `\frac{a}{b}` → `\frac{b}{a}`. On the name, the first argument moves. `[ ]` arguments stay.
+- `>&` / `<&` do the same for the cell under the cursor in its row.
+- The cursor goes along with the moved text; a count moves it further (`2>,`), and `.` repeats. `>>`, `>ap` and the other indents are unchanged.
 
 ## Matching
 
