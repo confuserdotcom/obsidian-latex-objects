@@ -1068,15 +1068,12 @@ function promptName(view, { placeholder, names, star = false }) {
     };
     win.addEventListener("keydown", hold, true);
     holding++;
-    setTimeout(() => {
+    win.setTimeout(() => {
       win.removeEventListener("keydown", hold, true);
       holding--;
       const c = view.coordsAtPos(view.state.selection.main.head) || { left: 0, bottom: 0 };
-      const input = doc.createElement("input");
-      input.className = "latex-objects-prompt";
-      input.placeholder = placeholder;
-      input.style.left = c.left + "px";
-      input.style.top = c.bottom + 2 + "px";
+      const input = doc.body.createEl("input", { cls: "latex-objects-prompt", attr: { placeholder } });
+      input.setCssProps({ "--latex-objects-left": c.left + "px", "--latex-objects-top": c.bottom + 2 + "px" });
       let cycle = null, finished = false;
       const finish = value => {
         if (finished) return;
@@ -1104,7 +1101,6 @@ function promptName(view, { placeholder, names, star = false }) {
         } else cycle = null;
       });
       input.addEventListener("blur", () => finish(null));
-      doc.body.appendChild(input);
       input.focus();
       for (const k of early) {
         if (k === "Enter") return finish(input.value);

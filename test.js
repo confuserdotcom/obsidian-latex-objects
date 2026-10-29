@@ -757,9 +757,9 @@ t("lastVisual: the charwise selection just left at the cursor, inclusive; else n
 const { promptName } = require("./main.js").core;
 function fakeDom() {
   const on = new Map(), listen = t => (type, fn) => on.set(t + type, fn), unlisten = t => type => on.delete(t + type);
-  const input = { value: "", addEventListener: listen("input:"), remove() {}, focus() {}, style: {} };
-  const win = { addEventListener: listen("win:"), removeEventListener: unlisten("win:") };
-  const doc = { defaultView: win, createElement: () => input, body: { appendChild() {} } };
+  const input = { value: "", css: {}, addEventListener: listen("input:"), remove() {}, focus() {}, setCssProps(p) { Object.assign(this.css, p); } };
+  const win = { addEventListener: listen("win:"), removeEventListener: unlisten("win:"), setTimeout: (fn, ms) => setTimeout(fn, ms) };
+  const doc = { defaultView: win, body: { createEl: (tag, o) => Object.assign(input, { tag, o }) } };
   const view = { dom: { ownerDocument: doc }, state: { selection: { main: { head: 0 } } }, coordsAtPos: () => null, focus() {} };
   const key = (where, k, extra = {}) => on.get(where + ":keydown")({ key: k, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {}, ...extra });
   return { view, input, key, held: () => on.has("win:keydown") };
@@ -787,6 +787,15 @@ ta("prompt: an early Enter accepts, an early Escape cancels", async () => {
   const b = fakeDom(), pb = promptName(b.view, { placeholder: "", names: [] });
   b.key("win", "x"); b.key("win", "Escape");
   assert.strictEqual(await pb, null);
+});
+ta("prompt: an input at the cursor, placed by CSS variables", async () => {
+  const d = fakeDom(), p = promptName(d.view, { placeholder: "New name", names: [] });
+  await new Promise(r => setTimeout(r, 5));
+  assert.strictEqual(d.input.tag, "input");
+  assert.deepStrictEqual(d.input.o, { cls: "latex-objects-prompt", attr: { placeholder: "New name" } });
+  assert.deepStrictEqual(d.input.css, { "--latex-objects-left": "0px", "--latex-objects-top": "2px" });
+  d.key("input", "Escape");
+  assert.strictEqual(await p, null);
 });
 ta("prompt: Enter while an IME composes is not ours", async () => {
   const d = fakeDom(), p = promptName(d.view, { placeholder: "", names: [] });
