@@ -371,7 +371,7 @@ t("]m has no 50-line limit (it only moves)", () => {
 const EN = L("\\begin{a}\n\\begin{b}\nx\n\\end{b}\n\\end{a}");
 t("]e enters a nested env", () => assert.deepStrictEqual(jat(at(0, 0), true, 1, envSpans(EN)), [1, 0]));
 t("2[e from inside the inner env reaches the outer", () => assert.deepStrictEqual(jat(at(2, 0), false, 2, envSpans(EN)), [0, 0]));
-t("jump keys", () => assert.deepStrictEqual(JUMPS.map(x => x[0]).sort(), ["[(", "[M", "[e", "[m", "[{", "](", "]M", "]e", "]m", "]{"]));
+t("jump keys", () => assert.deepStrictEqual(JUMPS.map(x => x[0]).sort(), ["[(", "[M", "[a", "[c", "[e", "[m", "[{", "](", "]M", "]a", "]c", "]e", "]m", "]{"]));
 
 // ─── ds / cs on brackets, Space l b ───
 // src, cursor ch, target, replacement (null = ds), in maths?  → result
@@ -598,6 +598,18 @@ t("ic: seeks the nearest when not in one", () => assert.strictEqual(ic("$x \\hat
 t("ic: nothing → null", () => assert.strictEqual(ic("$x$", at(0, 1)), null));
 t("ac: the whole command, optional argument included", () => assert.strictEqual(ac("$x + \\sqrt[n]{y}$", at(0, 12)), "\\sqrt[n]{y}"));
 t("2ac: the enclosing command", () => assert.strictEqual(ac("$\\frac{\\sqrt{x}}{y}$", at(0, 13), 2), "\\frac{\\sqrt{x}}{y}"));
+
+// ─── ]c ]a and jumps by name ───
+const { spansFor } = require("./main.js").core;
+t("]a lands inside the next argument, [a inside the previous one", () => {
+  const l = L("$\\frac{a}{b}$"), g = argSpans(l), land = s => s.ae;
+  assert.deepStrictEqual(land(jump(g, at(0, 0), true, 1, land)), at(0, 7));
+  assert.deepStrictEqual(land(jump(g, at(0, 7), true, 1, land)), at(0, 10));
+  assert.deepStrictEqual(land(jump(g, at(0, 10), false, 1, land)), at(0, 7));
+  assert.strictEqual(jump(g, at(0, 10), true, 1, land), null);
+});
+t("]c counts commands with arguments only", () => assert.strictEqual(jump(spansFor("command", L("$\\alpha \\hat{x} \\bar{y}$")), at(0, 0), true, 2).name, "bar"));
+t("spansFor named: every \\name", () => assert.deepStrictEqual(spansFor("named", L("$\\hat{x} \\frac{a}{b} \\frac{c}{d}$"), "frac").map(s => s.a.ch), [9, 21]));
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);

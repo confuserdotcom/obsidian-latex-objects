@@ -236,6 +236,8 @@ function commandNames(lines) {
 const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
 const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("["),
   command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans };
+// What a ]x / ; walks: an object's spans, or (]C / [C) the commands called `name`.
+const spansFor = (obj, lines, name) => (obj === "named" ? namedSpans(lines, name) : SPANS[obj](lines));
 
 // Is span s a better "nearest" than t for the cursor? Compared in order:
 //   1. lines between the cursor and the span's nearest edge (first char below, last char above)
@@ -640,10 +642,11 @@ function visualEnd(lines, start, end) {
   return e && cmp(e, start) >= 0 ? e : null;
 }
 
-// ]m [m ]e [e: the count-th span starting after (forward) / before the cursor, or the last
+// ]m [m ]e [e ]c ]a …: the count-th span starting after (forward) / before the cursor, or the last
 // one that exists (like Vim's 9]] stopping at the last section). No seek limit: it only moves.
-function jump(spans, pos, forward, count = 1) {
-  const c = spans.filter(s => (forward ? cmp(s.a, pos) > 0 : cmp(s.a, pos) < 0)).sort((x, y) => (forward ? 1 : -1) * cmp(x.a, y.a));
+// `land`: where a span is reached (]a lands inside the argument, the rest on their start).
+function jump(spans, pos, forward, count = 1, land = s => s.a) {
+  const c = spans.filter(s => (forward ? cmp(land(s), pos) > 0 : cmp(land(s), pos) < 0)).sort((x, y) => (forward ? 1 : -1) * cmp(land(x), land(y)));
   return c[Math.min(count, c.length) - 1] || null;
 }
 
@@ -680,7 +683,9 @@ const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", for
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
   ["](", { obj: "paren", forward: true }], ["[(", { obj: "paren", forward: false }],
-  ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }]];
+  ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }],
+  ["]c", { obj: "command", forward: true }], ["[c", { obj: "command", forward: false }],
+  ["]a", { obj: "arg", forward: true }], ["[a", { obj: "arg", forward: false }]];
 
 const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor" };
 const lineArray = cm => cm.getValue().split("\n");
@@ -760,18 +765,20 @@ function growN(spans, lines, sel, inner, count) {
 }
 
 // ]m [m ]e [e — a motion, so d]m, y[e, v]m and counts work too.
-let lastJump = null; // {obj, forward} of the last ]x / [x, until an f F t T
+let lastJump = null; // {obj, forward, name?} of the last ]x / [x / ]C name, until an f F t T
 function latexJump(cm, head, args) {
-  if (!args.again) lastJump = { obj: args.obj, forward: args.forward };
-  const s = jump(SPANS[args.obj](lineArray(cm)), at(head.line, head.ch), args.forward, args.repeat || 1);
+  if (!args.again) lastJump = { obj: args.obj, forward: args.forward, name: args.name };
+  const land = args.obj === "arg" ? g => g.ae : x => x.a;
+  const s = jump(spansFor(args.obj, lineArray(cm), args.name), at(head.line, head.ch), args.forward, args.repeat || 1, land);
+  if (!s && args.obj === "named") new Notice(`No \\${args.name} ${args.forward ? "below" : "above"}`);
   // A plain jump (normal/visual, no d]m etc.) lands like `zz`, once Vim has moved the cursor.
   const view = cm.cm6;
   if (s && view && CMView && !cm.state.vim?.inputState?.operator) setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
-  return s ? s.a : null;
+  return s ? land(s) : null;
 }
 
 // ; and , repeat the last ]x / [x (, the other way), else Vim's own f / t repeat.
-const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true });
+const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, name: lastJump.name, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true });
 function repeatJump(orig) {
   return (cm, head, args, vim, inputState) => lastJump ? againJump(cm, head, args) : orig(cm, head, args, vim, inputState);
 }
@@ -1103,4 +1110,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor };
