@@ -676,5 +676,30 @@ t("highlight: cheap test before the full scan", () => {
   assert.ok(!mayBeDelim("\\left(b", 7));
 });
 
+// ─── dsc / csc / wrap ───
+const { dscChanges, cscChanges, wrapChanges, keptArg, wordAt } = require("./main.js").core;
+const cmdAt = (l, pos) => pick(SPANS.command(l), pos, "cur");
+t("dsc keeps the argument under the cursor", () => {
+  const l = L("$\\frac{a}{b}$"), p = at(0, 10), s = cmdAt(l, p);
+  assert.strictEqual(apply(l, dscChanges(l, s, keptArg(s, p))), "$b$");
+});
+t("dsc on the name keeps the first argument and drops [opt]", () => {
+  const l = L("$\\sqrt[n]{x}$"), p = at(0, 2), s = cmdAt(l, p);
+  assert.strictEqual(apply(l, dscChanges(l, s, keptArg(s, p))), "$x$");
+  assert.strictEqual(keptArg(s, at(0, 7)).opt, false); // in [n]: still the {x}
+});
+t("csc renames and keeps the arguments", () => {
+  const l = L("$\\mathbf{x}$"), s = cmdAt(l, at(0, 3));
+  assert.strictEqual(apply(l, cscChanges(s, "mathcal")), "$\\mathcal{x}$");
+});
+t("wrap: \\name{…} around the range", () => {
+  const l = L("$x + y$");
+  assert.strictEqual(apply(l, wrapChanges(l, at(0, 1), at(0, 2), "mathbf")), "$\\mathbf{x} + y$");
+});
+t("wordAt: the word under the cursor, null on a space", () => {
+  assert.deepStrictEqual(wordAt(L("$ab + c$"), at(0, 2)), [at(0, 1), at(0, 3)]);
+  assert.strictEqual(wordAt(L("$ab + c$"), at(0, 3)), null);
+});
+
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);

@@ -633,6 +633,21 @@ function surroundChanges(lines, s, target, repl, inMaths) {
   return [{ from: s.a, to: from, text: o }, { from: to, to: s.b, text: c }];
 }
 const inMathsAt = (lines, p) => mathSpans(lines).some(m => cmp(m.a, p) <= 0 && cmp(p, m.b) < 0);
+// ─── command surround: dsc / csc, and Wrap in command ────────────────────────
+// dsc keeps one argument: the one the cursor is in, else the first ([…] ones go with the command).
+const keptArg = (s, pos) => s.args.find(g => !g.opt && cmp(g.a, pos) <= 0 && cmp(pos, g.b) < 0) || s.args.find(g => !g.opt);
+const dscChanges = (lines, s, keep) => [{ from: s.a, to: s.b, text: slice(lines, keep.ae, keep.bs) }];
+const cscChanges = (s, name) => [{ from: at(s.a.line, s.a.ch + 1), to: s.ae, text: name }];
+const wrapChanges = (lines, from, to, name) => [{ from, to, text: "\\" + name + "{" + slice(lines, from, to) + "}" }];
+// The word under the cursor (letters and digits) as [from, to), or null.
+function wordAt(lines, p) {
+  const l = lines[p.line], w = /[\p{L}\p{N}]/u;
+  if (!w.test(l[p.ch] || "")) return null;
+  let i = p.ch, j = p.ch;
+  while (i > 0 && w.test(l[i - 1])) i--;
+  while (j < l.length && w.test(l[j])) j++;
+  return [at(p.line, i), at(p.line, j)];
+}
 
 // Size bracket: ( ) [ ] \{ \} ⇄ \left( \right) … — the nearest bracket of any kind that can be
 // sized (a bare { } is LaTeX grouping, the ⟦ ⟧ intervals and \big( \big) are sized already).
@@ -945,6 +960,7 @@ const matchPlugin = CMView && CMView.ViewPlugin.fromClass(class {
 function surroundAction(orig) {
   const fn = (cm, args, vim) => {
     const target = TARGET[args.selectedCharacter], op = args.pendingOperator;
+    if (args.selectedCharacter === "c" && (op === "delete" || op === "change")) return commandSurround(cm, op, vim);
     if (!target || (op !== "delete" && op !== "change")) return orig(cm, args, vim);
     const lines = lineArray(cm), head = cm.getCursor(), s = pick(SPANS[OBJ_OF[target]](lines), at(head.line, head.ch), "cur");
     if (!s) return new Notice(NONE[OBJ_OF[target]]);
@@ -961,6 +977,21 @@ function surroundAction(orig) {
   };
   fn.latexOrig = orig;
   return fn;
+}
+// dsc: the nearest command → the argument kept; csc: asks for its new name. . repeats csc
+// with the same name (kept on the input state . replays, like cs's replacement).
+function commandSurround(cm, op, vim) {
+  const lines = lineArray(cm), head = cm.getCursor(), pos = at(head.line, head.ch), s = pick(SPANS.command(lines), pos, "cur");
+  if (!s) return new Notice(NONE.command);
+  if (op === "delete") { dispatchChanges(cm, dscChanges(lines, s, keptArg(s, pos))); return cm.setCursor(s.a); }
+  const run = name => { dispatchChanges(cm, cscChanges(s, name)); cm.setCursor(s.a); };
+  const st = vim.lastEditInputState;
+  if (st && st._latexName) return run(st._latexName);
+  promptName(cm.cm6, { placeholder: "csc  new name", names: commandNames(lines), star: true }).then(name => {
+    if (!name || cm.getValue() !== lines.join("\n")) return;
+    if (st) st._latexName = name;
+    run(name);
+  });
 }
 // The next typed character (AltGr / Shift / dead keys wait for it), or null on anything else.
 function nextKey(cb) {
@@ -1121,6 +1152,31 @@ class LatexObjects extends Plugin {
       if (!s) return new Notice("No ( ), [ ] or \\{ \\} near the cursor");
       this.commit(ed, lines, sizeChanges(lines, s), pos);
     });
+    cmd("delete-command", "Delete command, keep its argument", ed => this.edit(ed, "command", (l, s) => dscChanges(l, s, keptArg(s, ed.getCursor()))));
+    cmd("rename-command", "Rename command", ed => {
+      const f = this.find(ed, "command");
+      if (!f) return;
+      promptName(ed.cm, { placeholder: "New name for \\" + f.s.name, names: commandNames(f.lines), star: true }).then(name => {
+        if (name && ed.getValue() === f.lines.join("\n")) this.commit(ed, f.lines, cscChanges(f.s, name), f.pos);
+      });
+    });
+    cmd("wrap-command", "Wrap in command", ed => {
+      const lines = ed.getValue().split("\n"), sel = ed.listSelections()[0];
+      let [from, to] = cmp(sel.anchor, sel.head) <= 0 ? [sel.anchor, sel.head] : [sel.head, sel.anchor];
+      from = at(from.line, from.ch); to = at(to.line, to.ch);
+      if (!cmp(from, to)) {
+        const w = wordAt(lines, from);
+        if (!w) return new Notice("Nothing to wrap: select text or put the cursor on a word");
+        [from, to] = w;
+      }
+      const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+      promptName(ed.cm, { placeholder: "Wrap in \\…{ }", names: commandNames(lines) }).then(name => {
+        if (!name || ed.getValue() !== lines.join("\n")) return;
+        if (cm && cm.state.vim && cm.state.vim.visualMode && Vim && Vim.exitVisualMode) Vim.exitVisualMode(cm);
+        ed.transaction({ changes: wrapChanges(lines, from, to, name) });
+        ed.setCursor(from);
+      });
+    });
   }
 
   onunload() {
@@ -1245,11 +1301,11 @@ class LatexObjectsSettings extends PluginSettingTab {
       containerEl.createEl("p", { text: "Vim mode is off: the text objects need Settings → Editor → Vim key bindings, or the Vim Motions plugin. The commands work without it.", cls: "mod-warning" });
     new Setting(containerEl).setName("Seek distance").setDesc("How many lines above or below the cursor an object or a command looks for the nearest maths, environment or bracket.")
       .addText(t => t.setPlaceholder("50").setValue(String(p.settings.seekLines)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("seekLines", n); }));
-    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ jump to the next or previous maths, display maths, environment, parenthesis or brace.")
+    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ ]c [c ]a [a jump to the next or previous maths, display maths, environment, parenthesis, brace, command or argument; ]C [C to a command by name.")
       .addToggle(t => t.setValue(p.settings.jumps).onChange(v => { set("jumps", v); this.display(); }));
     if (p.settings.jumps) new Setting(containerEl).setName("Repeat jumps with ; and ,").setDesc("After a jump, ; repeats it and , goes the other way, until the next f F t T.")
       .addToggle(t => t.setValue(p.settings.repeatJumps).onChange(v => set("repeatJumps", v)));
-    new Setting(containerEl).setName("Bracket surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right. Needs the Vim Motions plugin.")
+    new Setting(containerEl).setName("Surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right; dsc deletes the nearest command and keeps its argument, csc renames it. Needs the Vim Motions plugin.")
       .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
     new Setting(containerEl).setName("Match with %").setDesc("% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.")
       .addToggle(t => t.setValue(p.settings.match).onChange(v => set("match", v)));
@@ -1263,4 +1319,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt };
