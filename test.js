@@ -822,6 +822,17 @@ t("scripts: \\_ and outside maths are not scripts", () => assert.deepStrictEqual
 t("scripts: no token (maths end, }, unclosed {) is no script", () => assert.deepStrictEqual(scripts("$x^$ $\\a{y_}$ $z^{w$"), []));
 t("scripts: a token over a surrogate pair", () => assert.deepStrictEqual(scripts("$x^𝔸$"), [["^", "𝔸", "^𝔸"]]));
 t("scripts: over a line break in $$", () => assert.deepStrictEqual(scripts("$$\nx^\n2\n$$"), [["^", "2", "^\n2"]]));
+t("scripts: \\^ is not a script, \\\\^2 is (a line break first)", () => {
+  assert.deepStrictEqual(scripts("$a\\^2$"), []);
+  assert.deepStrictEqual(scripts("$a\\\\^2$"), [["^", "2", "^2"]]);
+});
+t("scripts: a second mark right after has no script", () => {
+  assert.deepStrictEqual(scripts("$x^^2$"), [["^", "2", "^2"]]);
+  assert.deepStrictEqual(scripts("$x^&2$"), []);
+});
+t("scripts: a callout prefix before the token on the next line", () => assert.deepStrictEqual(scripts("> $$\n> x^\n> 2\n> $$"), [["^", "2", "^\n> 2"]]));
+t("scripts: \\ and an astral character is one token", () => assert.deepStrictEqual(scripts("$x^\\😀$"), [["^", "\\😀", "^\\😀"]]));
+t("scripts: a braced group over lines in $$", () => assert.deepStrictEqual(scripts("$$\nx^{a\nb}\n$$"), [["^", "a\nb", "^{a\nb}"]]));
 t("SPANS.sup / SPANS.sub split by type", () => {
   assert.deepStrictEqual(SPANS.sup(L("$x_a^b$")).map(s => s.type), ["^"]);
   assert.deepStrictEqual(SPANS.sub(L("$x_a^b$")).map(s => s.type), ["_"]);

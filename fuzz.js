@@ -11,7 +11,7 @@ function rng(seed) { // mulberry32
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 const TOKENS = ["$", "$", "$$", "\\", "\\$", "\\\\", "(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\frac", "\\sqrt", "[n]", "\\alpha ", "\\mathbb", "\\begin{a}", "\\end{a}",
-  "\\begin{b*}", "\\end{b*}", "^", "_", "&", "&", "\\&", "\\_", "\\begin{pmatrix}", "\\end{pmatrix}", "\\left(","\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
+  "\\begin{b*}", "\\end{b*}", "^", "_", "&", "&", "\\&", "\\_", "\\begin{pmatrix}", "\\end{pmatrix}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
 function doc(r) {
   let s = "";
   const n = 1 + Math.floor(r() * (r() < 0.1 ? 400 : 40));
@@ -84,14 +84,23 @@ try {
       const nested = (cmp(x.a, y.a) <= 0 && cmp(y.b, x.b) <= 0) || (cmp(y.a, x.a) <= 0 && cmp(x.b, y.b) <= 0);
       assert(disjoint || nested, "crossing commands / arguments");
     }
-    // scripts, rows and cells: ordered positions in the doc; a script is in maths and starts
-    // with its ^ / _; a row's cells are inside it; a swap only trades the two texts
-    current = `doc ${d} tables ${JSON.stringify(src)}`;
+    // scripts: ordered positions in the doc; a script is in maths and starts with its ^ / _;
+    // braced: the group's { and } border the argument; token: the argument is the span's end;
+    // no boundary splits a surrogate pair
+    current = `doc ${d} scripts ${JSON.stringify(src)}`;
     const ordered = s => [s.a, s.ae, s.bs, s.b].every(p => within(lines, p)) && cmp(s.a, s.ae) <= 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) <= 0;
     for (const s of C.scriptSpans(lines)) {
       assert(ordered(s) && cmp(s.a, s.ae) < 0, "script out of order");
       assert(maths.some(m => cmp(m.ae, s.a) <= 0 && cmp(s.b, m.bs) <= 0), "script outside maths");
       assert.strictEqual(lines[s.a.line][s.a.ch], s.type, "script mark");
+      if (cmp(s.bs, s.b) < 0) {
+        assert.strictEqual(text(lines, at(s.ae.line, s.ae.ch - 1), s.ae), "{", "braced script open");
+        assert.strictEqual(text(lines, s.bs, s.b), "}", "braced script close");
+      } else assert(cmp(s.ae, s.bs) < 0, "token script is empty");
+      for (const p of [s.ae, s.bs, s.b]) {
+        const l = lines[p.line];
+        assert(!(p.ch > 0 && p.ch < l.length && /[\ud800-\udbff]/.test(l[p.ch - 1]) && /[\udc00-\udfff]/.test(l[p.ch])), "script splits a surrogate pair");
+      }
       stats.spans++;
     }
     // %: from any delimiter, its partner leads back to it

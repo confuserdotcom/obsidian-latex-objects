@@ -252,14 +252,18 @@ function scriptSpans(lines) {
         const q = skipSpace(lines, at(r, i + 1), end);
         if (!q) continue;
         const t = lines[q.line], k = t[q.ch], qto = q.line === end.line ? end.ch : t.length;
-        if ("}^_&".includes(k)) continue;
+        if ("}^_&".includes(k)) continue; // a } ^ _ & right after is not a script argument
         let ae = q, bs, b;
         if (k === "{") {
           const e = ends.get(q.line + ":" + q.ch);
           if (!e) continue;
           ae = at(q.line, q.ch + 1); bs = at(e.line, e.ch - 1); b = e;
         } else {
-          const n = k === "\\" ? 1 + ((/^[A-Za-z]+/.exec(t.slice(q.ch + 1, qto)) || ["."])[0].length) : isHigh(t, q.ch) ? 2 : 1;
+          let n = 1; // the token's length in UTF-16 units: \name, \ and one character, a character
+          if (k === "\\") {
+            const name = /^[A-Za-z]+/.exec(t.slice(q.ch + 1, qto));
+            n = name ? 1 + name[0].length : 1 + (isHigh(t, q.ch + 1) ? 2 : 1);
+          } else if (isHigh(t, q.ch)) n = 2;
           bs = b = at(q.line, Math.min(q.ch + n, qto));
         }
         out.push({ kind: "script", type: c, a: at(r, i), ae, bs, b });
@@ -1420,4 +1424,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { scriptSpans, mathSpans,envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
+module.exports.core = { scriptSpans, mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
