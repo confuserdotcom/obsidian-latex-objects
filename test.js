@@ -858,6 +858,25 @@ t("cells: one-cell row: a& is just the cell", () => assert.deepStrictEqual(table
 t("cells: array's column spec is not a cell", () => assert.deepStrictEqual(table("\\begin{array}{cc} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]));
 t("tables: an environment without & or \\\\ has no rows", () => assert.deepStrictEqual(table("\\begin{equation} x \\end{equation}"), []));
 t("tables: callout prefixes are not cell text", () => assert.deepStrictEqual(table("> $$\n> \\begin{matrix}\n> a & b\n> \\end{matrix}\n> $$")[0][0], "a & b"));
+t("cells: an optional [..] before the column spec is not a cell", () => {
+  assert.deepStrictEqual(table("\\begin{array}[t]{cc} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]);
+  assert.deepStrictEqual(table("\\begin{tabular}[t]{cc} a & b \\end{tabular}")[0][2].map(c => c[0]), ["a", "b"]);
+});
+t("rows: aR on the last row takes the previous row's end through its \\\\", () => {
+  const l = L("\\begin{align} a \\\\ b \\end{align}"), r = rowSpans(l)[1];
+  assert.deepStrictEqual(range(r, l, false), { start: at(0, 15), end: at(0, 20) });
+});
+t("cells: a multi-line cell", () => assert.deepStrictEqual(table("\\begin{matrix} a\nb & c \\end{matrix}")[0][2], [["a\nb", "a\nb & "], ["c", " & c"]]));
+t("rows: a blank middle row", () => assert.deepStrictEqual(table("\\begin{align} a \\\\ \\\\ b \\end{align}").map(r => r.slice(0, 2)), [["a", "a \\\\"], ["", " \\\\"], ["b", " \\\\ b"]]));
+t("cells: next / last pick the neighbouring cell", () => {
+  const l = L("\\begin{matrix} a & b & c \\end{matrix}"), nx = countPick(SPANS.cell(l), l, at(0, 16), "next", true, 1), ls = countPick(SPANS.cell(l), l, at(0, 20), "last", true, 1);
+  assert.strictEqual(text(l, nx.start, nx.end), "b");
+  assert.strictEqual(text(l, ls.start, ls.end), "a");
+});
+t("cells: a count of 2 from a nested matrix reaches the outer cell", () => {
+  const l = L("\\begin{matrix} a & \\begin{matrix} x & y \\end{matrix} \\end{matrix}"), r = countPick(SPANS.cell(l), l, at(0, l[0].indexOf(" x ") + 1), "cur", true, 2);
+  assert.strictEqual(text(l, r.start, r.end), "\\begin{matrix} x & y \\end{matrix}");
+});
 t("range: aR on a row alone on its line is linewise", () => {
   const l = L("\\begin{align}\nx \\\\\ny\n\\end{align}"), [r0, r1] = rowSpans(l);
   assert.deepStrictEqual(range(r0, l, false), { start: at(1, 0), end: at(1, 4), linewise: true });

@@ -292,16 +292,16 @@ function trimmed(lines, p, q) {
 // a row with its \\ (the last one: from the previous row's text, through that \\).
 function tableSpans(lines) {
   const envs = envSpans(lines), rows = [];
+  const startAt = new Map(envs.map(n => [n.a.line + ":" + n.a.ch, n]));
   for (const env of envs) {
-    const starts = new Map(envs.filter(n => cmp(n.a, env.ae) >= 0 && cmp(n.b, env.bs) <= 0).map(n => [n.a.line + ":" + n.a.ch, n]));
-    const arg = argOf(lines, env), from = arg ? at(env.ae.line, env.ae.ch + arg[0].length) : env.ae;
+    const arg = ARG_ENV.test(env.name) && /^(\[[^\]]*\])?\{[^}]*\}/.exec(lines[env.ae.line].slice(env.ae.ch)), from = arg ? at(env.ae.line, env.ae.ch + arg[0].length) : env.ae;
     const marks = []; // { amp, p, e }
     let depth = 0, r = from.line, i = from.ch;
     while (cmp(at(r, i), env.bs) < 0) {
       const line = lines[r];
       if (i >= line.length) { r++; i = 0; continue; }
-      const n = starts.get(r + ":" + i);
-      if (n) { r = n.b.line; i = n.b.ch; continue; }
+      const n = startAt.get(r + ":" + i);
+      if (n && cmp(n.a, env.ae) >= 0 && cmp(n.b, env.bs) <= 0) { r = n.b.line; i = n.b.ch; continue; }
       const c = line[i];
       if (c === "{") depth++;
       else if (c === "}") depth = Math.max(0, depth - 1);
@@ -330,7 +330,7 @@ function tableSpans(lines) {
     for (const g of segs) {
       const [ae, bs] = trimmed(lines, g.cells[0][0], g.cells[g.cells.length - 1][1]);
       if (!g.sep && !cmp(ae, bs) && envRows.length) continue; // nothing after the last \\
-      const row = { kind: "row", a: ae, ae, bs, b: g.sep ? g.sep.e : bs, cells: [] };
+      const row = { kind: "row", a: ae, ae, bs, b: g.sep ? g.sep.e : bs, cells: [], noSep: !g.sep };
       // a blank cell sits at its place, kept inside the row's text (a blank first cell: at the first &)
       const clamp = p => (cmp(p, ae) < 0 ? ae : cmp(p, bs) > 0 ? bs : p);
       row.cells = g.cells.map(([p, q]) => { const [cae, cbs] = trimmed(lines, p, q).map(clamp); return { kind: "cell", a: cae, ae: cae, bs: cbs, b: cbs, row }; });
@@ -338,7 +338,7 @@ function tableSpans(lines) {
       envRows.push(row);
     }
     const lastRow = envRows[envRows.length - 1], prev = envRows[envRows.length - 2];
-    if (prev && lastRow.b === lastRow.bs) lastRow.a = prev.bs;
+    if (prev && lastRow.noSep) lastRow.a = prev.bs;
     rows.push(...envRows);
   }
   return rows;
