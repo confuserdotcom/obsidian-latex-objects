@@ -371,7 +371,7 @@ t("]m has no 50-line limit (it only moves)", () => {
 const EN = L("\\begin{a}\n\\begin{b}\nx\n\\end{b}\n\\end{a}");
 t("]e enters a nested env", () => assert.deepStrictEqual(jat(at(0, 0), true, 1, envSpans(EN)), [1, 0]));
 t("2[e from inside the inner env reaches the outer", () => assert.deepStrictEqual(jat(at(2, 0), false, 2, envSpans(EN)), [0, 0]));
-t("jump keys", () => assert.deepStrictEqual(JUMPS.map(x => x[0]).sort(), ["[(", "[M", "[e", "[m", "[{", "](", "]M", "]e", "]m", "]{"]));
+t("jump keys", () => assert.deepStrictEqual(JUMPS.map(x => x[0]).sort(), ["[(", "[M", "[a", "[c", "[e", "[m", "[{", "](", "]M", "]a", "]c", "]e", "]m", "]{"]));
 
 // ─── ds / cs on brackets, Space l b ───
 // src, cursor ch, target, replacement (null = ds), in maths?  → result
@@ -487,9 +487,13 @@ t("vaB then anB: the child around, not the selection itself", () => assert.stric
 t("no child inside → null (falls back to seek)", () => assert.strictEqual(sh("{ab} {c}", { start: at(0, 1), last: at(0, 2) }, "next", 1), null));
 
 // ─── keys ───
-t("all 36 keys, unique", () => {
+t("all 42 keys, unique", () => {
   const k = KEYS.map(x => x[0]);
-  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ae", "alB", "alM", "alb", "ale", "alm", "alr", "am", "anB", "anM", "anb", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ie", "ilB", "ilM", "ilb", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "ine", "inm", "inr", "ir"]);
+  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ac", "ae", "alB", "alM", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "anb", "anc", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ic", "ie", "ilB", "ilM", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "inc", "ine", "inm", "inr", "ir"]);
+});
+t("ic is an argument, ac a command", () => {
+  const obj = key => KEYS.find(x => x[0] === key)[1].obj;
+  assert.deepStrictEqual(["ic", "inc", "ac", "alc"].map(obj), ["arg", "arg", "command", "command"]);
 });
 
 // ─── cursor after a Space l edit: stays on the same character ───
@@ -503,10 +507,10 @@ t("cursor: toggle alone on its line → display keeps it on its letter", () => a
 
 // ─── settings ───
 const { cleanSettings, CONFIG } = require("./main.js").core;
-t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, flash: true, flashMs: 250 }));
+t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 }));
 t("settings: saved values kept, junk back to default", () => {
-  const c = cleanSettings({ seekLines: 20, jumps: false, flash: "yes", flashMs: NaN, other: 1 });
-  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, flash: true, flashMs: 250 });
+  const c = cleanSettings({ seekLines: 20, jumps: false, flash: "yes", flashMs: NaN, match: 0, other: 1 });
+  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 });
 });
 t("settings: numbers clamped and rounded", () => {
   assert.strictEqual(cleanSettings({ seekLines: 0 }).seekLines, 1);
@@ -552,5 +556,260 @@ t("align in a list item indents under the item", () => {
   assert.strictEqual(apply(l, alignChanges(l, mathSpans(l)[0])), "1.\n   $$\n   \\begin{align}\n   x &= 1\n   \\end{align}\n   $$");
 });
 
-if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
-console.log(`ok — ${n} tests`);
+// ─── commands (1.1) ───
+const { commandSpans, argSpans, namedSpans, commandNames } = require("./main.js").core;
+const cmds = s => { const l = L(s); return commandSpans(l).map(c => [c.name, ...c.args.map(g => (g.opt ? "[" : "{") + text(l, g.ae, g.bs))]); };
+t("commands: \\frac{a}{b} has two arguments", () => assert.deepStrictEqual(cmds("$\\frac{a}{b}$"), [["frac", "{a", "{b"]]));
+t("commands: optional argument before a brace", () => assert.deepStrictEqual(cmds("$\\sqrt[n]{x}$"), [["sqrt", "[n", "{x"]]));
+t("commands: [x] after the last brace is not an argument", () => assert.deepStrictEqual(cmds("$\\mathbb{R}[x]$"), [["mathbb", "{R"]]));
+t("commands: no arguments", () => assert.deepStrictEqual(cmds("$\\alpha [0, 1]$"), [["alpha"]]));
+t("commands: spaces and a newline between groups", () => assert.deepStrictEqual(cmds("$$\n\\frac {a}\n{b}\n$$"), [["frac", "{a", "{b"]]));
+t("commands: groups on callout lines skip the > prefix", () => assert.deepStrictEqual(cmds("> $$\n> \\frac{a}\n> {b}\n> $$"), [["frac", "{a", "{b"]]));
+t("commands: nested, in document order", () => assert.deepStrictEqual(cmds("$\\frac{\\sqrt{x}}{y}$"), [["frac", "{\\sqrt{x}", "{y"], ["sqrt", "{x"]]));
+t("commands: \\{ \\} are not braces", () => assert.deepStrictEqual(cmds("$\\mathbf{\\{a\\}}$"), [["mathbf", "{\\{a\\}"]]));
+t("commands: \\begin \\left \\big are not commands", () => assert.deepStrictEqual(cmds("$\\left( \\bigl[ x \\bigr] \\right)$\n$$\n\\begin{a}\n\\end{a}\n$$"), []));
+t("commands: outside maths is text", () => assert.deepStrictEqual(cmds("\\textbf{a} $\\mathbf{b}$"), [["mathbf", "{b"]]));
+t("commands: an unclosed group ends the arguments", () => assert.deepStrictEqual(cmds("$\\frac{a}{b$"), [["frac", "{a"]]));
+t("commands: a [ group never takes the } of the enclosing one", () => assert.deepStrictEqual(cmds("$\\frac{\\sqrt[}]{x}$"), [["frac", "{\\sqrt["], ["sqrt"]]));
+t("commands: \\ then a name is a line break, not a command", () => assert.deepStrictEqual(cmds("$a \\\\frac{b}$"), []));
+t("commands: several optional arguments", () => assert.deepStrictEqual(cmds("$\\x[a][b]{c}$"), [["x", "[a", "[b", "{c"]]));
+t("commands: an unclosed [ ends the arguments", () => assert.deepStrictEqual(cmds("$\\sqrt[a$"), [["sqrt"]]));
+t("commands: an optional argument over two lines", () => assert.deepStrictEqual(cmds("$$\n\\sqrt[a\nb]{x}\n$$"), [["sqrt", "[a\nb", "{x"]]));
+t("commands: an unclosed { ends its command's arguments, the ones inside still count", () => assert.deepStrictEqual(cmds("$\\a{\\b{x}\\c{y}$"), [["a"], ["b", "{x"], ["c", "{y"]]));
+t("commands: a long unclosed run stays fast (one pass over the maths)", () => {
+  const l = L("$$\n" + "\\a{".repeat(20000) + "\n$$"), t0 = Date.now();
+  assert.strictEqual(commandSpans(l).length, 20000);
+  assert.ok(Date.now() - t0 < 500, Date.now() - t0 + "ms");
+});
+t("]a [a: an empty group is landed on at its }", () => {
+  const l = L("$a \\hat{} b \\c{x}$"), g = argSpans(l), j = (p, f) => jump(g, p, f, 1, x => x.ae).ae.ch;
+  assert.strictEqual(j(at(0, 1), true), 8);
+  assert.strictEqual(j(at(0, 8), true), 15);
+  assert.strictEqual(j(at(0, 15), false), 8);
+});
+t("commands: args point back, b ends the last one, bs = b", () => {
+  const l = L("$\\frac{a}{b} x$"), [c] = commandSpans(l);
+  assert.ok(c.args.every(g => g.cmd === c));
+  assert.strictEqual(text(l, c.a, c.b), "\\frac{a}{b}");
+  assert.deepStrictEqual(c.bs, c.b);
+});
+t("argSpans: every argument of every command", () => {
+  const l = L("$\\frac{a}{\\sqrt{b}}$");
+  assert.deepStrictEqual(argSpans(l).map(g => text(l, g.a, g.b)), ["{a}", "{\\sqrt{b}}", "{b}"]);
+});
+t("SPANS.command skips commands without arguments", () => assert.deepStrictEqual(SPANS.command(L("$\\alpha \\hat{x}$")).map(c => c.name), ["hat"]));
+t("namedSpans: by name, with or without arguments", () => assert.deepStrictEqual(namedSpans(L("$\\alpha \\frac{a}{b} \\alpha$"), "alpha").map(c => c.a.ch), [1, 20]));
+t("commandNames: most frequent first, then alphabetical", () => assert.deepStrictEqual(commandNames(L("$\\frac{a}{b} \\beta \\frac{c}{d} \\alpha$")), ["frac", "alpha", "beta"]));
+
+// ─── ic / ac ───
+const { icPick } = require("./main.js").core;
+const ic = (s, pos, which = "cur", count = 1) => { const l = L(s), r = icPick(l, pos, which, count); return r && text(l, r.start, r.end); };
+const ac = (s, pos, count = 1) => { const l = L(s), r = countPick(SPANS.command(l), l, pos, "cur", false, count); return r && text(l, r.start, r.end); };
+t("ic: inside the argument around the cursor", () => assert.strictEqual(ic("$\\frac{ab}{c}$", at(0, 8)), "ab"));
+t("ic: on the name → the first argument", () => assert.strictEqual(ic("$\\frac{ab}{c}$", at(0, 3)), "ab"));
+t("ic: on a nested command's name → its own first argument", () => assert.strictEqual(ic("$\\frac{\\sqrt{x}}{y}$", at(0, 9)), "x"));
+t("2ic: the enclosing argument", () => assert.strictEqual(ic("$\\frac{\\sqrt{x}}{y}$", at(0, 13), "cur", 2), "\\sqrt{x}"));
+t("inc: the next argument", () => assert.strictEqual(ic("$\\frac{a}{b}$", at(0, 7), "next"), "b"));
+t("ic: seeks the nearest when not in one", () => assert.strictEqual(ic("$x \\hat{y}$", at(0, 1)), "y"));
+t("ic: nothing → null", () => assert.strictEqual(ic("$x$", at(0, 1)), null));
+t("ac: the whole command, optional argument included", () => assert.strictEqual(ac("$x + \\sqrt[n]{y}$", at(0, 12)), "\\sqrt[n]{y}"));
+t("2ac: the enclosing command", () => assert.strictEqual(ac("$\\frac{\\sqrt{x}}{y}$", at(0, 13), 2), "\\frac{\\sqrt{x}}{y}"));
+
+// ─── ]c ]a and jumps by name ───
+const { spansFor } = require("./main.js").core;
+t("]a lands inside the next argument, [a inside the previous one", () => {
+  const l = L("$\\frac{a}{b}$"), g = argSpans(l), land = s => s.ae;
+  assert.deepStrictEqual(land(jump(g, at(0, 0), true, 1, land)), at(0, 7));
+  assert.deepStrictEqual(land(jump(g, at(0, 7), true, 1, land)), at(0, 10));
+  assert.deepStrictEqual(land(jump(g, at(0, 10), false, 1, land)), at(0, 7));
+  assert.strictEqual(jump(g, at(0, 10), true, 1, land), null);
+});
+t("]c counts commands with arguments only", () => assert.strictEqual(jump(spansFor("command", L("$\\alpha \\hat{x} \\bar{y}$")), at(0, 0), true, 2).name, "bar"));
+t("spansFor named: every \\name", () => assert.deepStrictEqual(spansFor("named", L("$\\hat{x} \\frac{a}{b} \\frac{c}{d}$"), "frac").map(s => s.a.ch), [9, 21]));
+
+// ─── name prompt helpers ───
+const { completions, commonPrefix, validName, unslash } = require("./main.js").core;
+t("prompt: completions ignore a leading backslash", () => assert.deepStrictEqual(completions("\\ma", ["frac", "mathbb", "mathcal"]), ["mathbb", "mathcal"]));
+t("prompt: longest common prefix", () => {
+  assert.strictEqual(commonPrefix(["mathbb", "mathcal"]), "math");
+  assert.strictEqual(commonPrefix(["frac"]), "frac");
+  assert.strictEqual(commonPrefix([]), "");
+});
+t("prompt: names are letters, a trailing * only when allowed", () => {
+  assert.ok(validName("\\frac"));
+  assert.ok(!validName("fr ac"));
+  assert.ok(!validName("align*"));
+  assert.ok(validName("align*", true));
+  assert.ok(!validName(""));
+  assert.strictEqual(unslash("\\frac"), "frac");
+});
+
+// ─── % ───
+const { delimAt, partner, matchTarget } = require("./main.js").core;
+t("%: \\begin ⇄ \\end, from any character of the token", () => {
+  const l = L("\\begin{a}\nx\n\\end{a}");
+  for (let ch = 0; ch < 9; ch++) assert.deepStrictEqual(partner(l, at(0, ch)), at(2, 0));
+  for (let ch = 0; ch < 7; ch++) assert.deepStrictEqual(partner(l, at(2, ch)), at(0, 0));
+  assert.strictEqual(partner(l, at(1, 0)), null);
+});
+t("%: \\left ⇄ \\right", () => {
+  const l = L("$\\left( x \\right)$");
+  assert.deepStrictEqual(partner(l, at(0, 3)), at(0, 10));
+  assert.deepStrictEqual(partner(l, at(0, 15)), at(0, 1));
+});
+t("%: a plain ( and \\big( are not ours", () => {
+  assert.strictEqual(partner(L("$(x)$"), at(0, 1)), null);
+  assert.strictEqual(partner(L("$\\big( x \\big)$"), at(0, 2)), null);
+});
+t("%: $ and $$", () => {
+  const l = L("a $x$ b\n$$\ny\n$$");
+  assert.deepStrictEqual(partner(l, at(0, 2)), at(0, 4));
+  assert.deepStrictEqual(partner(l, at(0, 4)), at(0, 2));
+  assert.deepStrictEqual(partner(l, at(1, 1)), at(3, 0));
+  assert.deepStrictEqual(partner(l, at(3, 1)), at(1, 0));
+});
+t("%: where it goes — normal, visual forward, operator", () => {
+  const l = L("$x$"), fwd = delimAt(l, at(0, 0)), back = delimAt(l, at(0, 2));
+  assert.deepStrictEqual(fwd, { here: [at(0, 0), at(0, 1)], there: [at(0, 2), at(0, 3)] });
+  assert.deepStrictEqual(matchTarget(fwd, false, false), at(0, 2));
+  assert.deepStrictEqual(matchTarget(back, false, false), at(0, 0));
+  assert.deepStrictEqual(matchTarget(fwd, true, false), [at(0, 0), at(0, 3)]);
+  assert.deepStrictEqual(matchTarget(back, true, false), [at(0, 0), at(0, 3)]);
+  const env = delimAt(L("\\begin{a}x\\end{a}"), at(0, 0));
+  assert.deepStrictEqual(matchTarget(env, false, true), at(0, 16));
+});
+t("%: backward from \\end — d% takes both, visual lands on \\begin", () => {
+  const back = delimAt(L("\\begin{a}x\\end{a}"), at(0, 12));
+  assert.deepStrictEqual(matchTarget(back, true, false), [at(0, 0), at(0, 17)]);
+  assert.deepStrictEqual(matchTarget(back, false, true), at(0, 0));
+});
+
+// ─── match highlight ───
+const { mayBeDelim } = require("./main.js").core;
+t("highlight: cheap test before the full scan", () => {
+  assert.ok(mayBeDelim("a $x$", 2));
+  assert.ok(mayBeDelim("\\begin{a}", 3));
+  assert.ok(!mayBeDelim("plain (text)", 6));
+  const b = "xx \\begin{align} yy zzzz";
+  assert.ok(!mayBeDelim(b, 0) && !mayBeDelim(b, 20) && !mayBeDelim(b, 2) && !mayBeDelim(b, 16)); // far from it
+  for (const i of [3, 4, 7, 9, 10, 12, 14]) assert.ok(mayBeDelim(b, i), "begin at " + i); // \, b, n, {, name, }
+  for (const [l, i] of [["\\end{x}", 0], ["\\end{x}", 5], ["a\\left(b", 1], ["a\\left(b", 6], ["\\right)", 6], ["\\left\\{", 6], ["\\left.", 5]]) assert.ok(mayBeDelim(l, i), l + i);
+  assert.ok(!mayBeDelim("\\left(b", 7));
+});
+t("highlight: only the $ under the cursor counts", () => {
+  assert.ok(mayBeDelim("a $x$ b", 4));
+  assert.ok(!mayBeDelim("a $x$ b", 0) && !mayBeDelim("a $x$ b", 3));
+});
+t("highlight: \\left\\left( — the ( belongs to the second \\left", () => {
+  const l = "$\\left\\left( x \\right) \\right.$";
+  for (let i = 0; i < l.length; i++) if (delimAt([l], at(0, i))) assert.ok(mayBeDelim(l, i), "missed at " + i);
+  assert.ok(mayBeDelim("$\\left\\{ a \\right\\}$", 7) && mayBeDelim("$\\left\\langle a$", 8));
+});
+
+// ─── dsc / csc / wrap ───
+const { dscChanges, cscChanges, wrapChanges, keptArg, wordAt, lastVisual } = require("./main.js").core;
+const cmdAt = (l, pos) => pick(SPANS.command(l), pos, "cur");
+t("dsc keeps the argument under the cursor", () => {
+  const l = L("$\\frac{a}{b}$"), p = at(0, 10), s = cmdAt(l, p);
+  assert.strictEqual(apply(l, dscChanges(l, s, keptArg(s, p))), "$b$");
+});
+t("dsc on the name keeps the first argument and drops [opt]", () => {
+  const l = L("$\\sqrt[n]{x}$"), p = at(0, 2), s = cmdAt(l, p);
+  assert.strictEqual(apply(l, dscChanges(l, s, keptArg(s, p))), "$x$");
+  assert.strictEqual(keptArg(s, at(0, 7)).opt, false); // in [n]: still the {x}
+});
+t("dsc on an argument's closing } keeps that argument", () => {
+  const l = L("$\\frac{a}{b}$"), p = at(0, 11), s = cmdAt(l, p);
+  assert.strictEqual(apply(l, dscChanges(l, s, keptArg(s, p))), "$b$");
+});
+t("csc renames and keeps the arguments", () => {
+  const l = L("$\\mathbf{x}$"), s = cmdAt(l, at(0, 3));
+  assert.strictEqual(apply(l, cscChanges(s, "mathcal")), "$\\mathcal{x}$");
+});
+t("wrap: \\name{…} around the range", () => {
+  const l = L("$x + y$");
+  assert.strictEqual(apply(l, wrapChanges(l, at(0, 1), at(0, 2), "mathbf")), "$\\mathbf{x} + y$");
+});
+t("wordAt: the word under the cursor, null on a space", () => {
+  assert.deepStrictEqual(wordAt(L("$ab + c$"), at(0, 2)), [at(0, 1), at(0, 3)]);
+  assert.strictEqual(wordAt(L("$ab + c$"), at(0, 3)), null);
+});
+t("wordAt: accented letters are part of the word", () => assert.deepStrictEqual(wordAt(L("$été + x$"), at(0, 2)), [at(0, 1), at(0, 4)]));
+t("wordAt: a command name takes its \\ along (not after \\\\, not with digits)", () => {
+  assert.deepStrictEqual(wordAt(L("$\\alpha$"), at(0, 3)), [at(0, 1), at(0, 7)]);
+  assert.deepStrictEqual(wordAt(L("$ab$"), at(0, 1)), [at(0, 1), at(0, 3)]);
+  assert.deepStrictEqual(wordAt(L("a\\\\b"), at(0, 3)), [at(0, 3), at(0, 4)]);
+  assert.deepStrictEqual(wordAt(L("$\\x2$"), at(0, 2)), [at(0, 2), at(0, 4)]);
+});
+t("lastVisual: the charwise selection just left at the cursor, inclusive; else null", () => {
+  const mk = (a, h, extra = {}) => ({ state: { vim: { lastSelection: { anchorMark: { find: () => a }, headMark: { find: () => h }, ...extra } } } });
+  const l = L("$a+b$");
+  assert.deepStrictEqual(lastVisual(mk(at(0, 1), at(0, 3)), at(0, 3), l), [at(0, 1), at(0, 4)]);
+  assert.deepStrictEqual(lastVisual(mk(at(0, 3), at(0, 1)), at(0, 1), l), [at(0, 1), at(0, 4)]);
+  assert.strictEqual(lastVisual(mk(at(0, 1), at(0, 3)), at(0, 0), l), null);
+  assert.strictEqual(lastVisual(mk(at(0, 1), at(0, 3), { visualLine: true }), at(0, 3), l), null);
+  assert.strictEqual(lastVisual(mk(undefined, at(0, 3)), at(0, 3), l), null);
+  assert.strictEqual(lastVisual({ state: { vim: {} } }, at(0, 3), l), null);
+  assert.strictEqual(lastVisual(null, at(0, 3), l), null);
+});
+
+// ─── the name prompt (a stand-in DOM) ───
+const { promptName } = require("./main.js").core;
+function fakeDom() {
+  const on = new Map(), listen = t => (type, fn) => on.set(t + type, fn), unlisten = t => type => on.delete(t + type);
+  const input = { value: "", css: {}, addEventListener: listen("input:"), remove() {}, focus() {}, setCssProps(p) { Object.assign(this.css, p); } };
+  const win = { addEventListener: listen("win:"), removeEventListener: unlisten("win:"), setTimeout: (fn, ms) => setTimeout(fn, ms) };
+  const doc = { defaultView: win, body: { createEl: (tag, o) => Object.assign(input, { tag, o }) } };
+  const view = { dom: { ownerDocument: doc }, state: { selection: { main: { head: 0 } } }, coordsAtPos: () => null, focus() {} };
+  const key = (where, k, extra = {}) => on.get(where + ":keydown")({ key: k, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {}, ...extra });
+  return { view, input, key, held: () => on.has("win:keydown") };
+}
+const tests = [];
+const ta = (name, fn) => tests.push([name, fn]);
+ta("prompt: no view → null", async () => assert.strictEqual(await promptName(null, { placeholder: "", names: [] }), null));
+ta("prompt: keys typed before it opens go into it", async () => {
+  const d = fakeDom(), p = promptName(d.view, { placeholder: "", names: [] });
+  for (const k of "matx") d.key("win", k);
+  d.key("win", "Backspace");
+  d.key("win", "Shift"); // not a character: left alone
+  d.key("win", "h", { ctrlKey: true }); // a shortcut: left alone
+  await new Promise(r => setTimeout(r, 5));
+  assert.ok(!d.held(), "stops holding once open");
+  assert.strictEqual(d.input.value, "mat");
+  d.key("input", "Enter");
+  assert.strictEqual(await p, "mat");
+});
+ta("prompt: an early Enter accepts, an early Escape cancels", async () => {
+  const a = fakeDom(), pa = promptName(a.view, { placeholder: "", names: [] });
+  for (const k of "hat") a.key("win", k);
+  a.key("win", "Enter");
+  assert.strictEqual(await pa, "hat");
+  const b = fakeDom(), pb = promptName(b.view, { placeholder: "", names: [] });
+  b.key("win", "x"); b.key("win", "Escape");
+  assert.strictEqual(await pb, null);
+});
+ta("prompt: an input at the cursor, placed by CSS variables", async () => {
+  const d = fakeDom(), p = promptName(d.view, { placeholder: "New name", names: [] });
+  await new Promise(r => setTimeout(r, 5));
+  assert.strictEqual(d.input.tag, "input");
+  assert.deepStrictEqual(d.input.o, { cls: "latex-objects-prompt", attr: { placeholder: "New name" } });
+  assert.deepStrictEqual(d.input.css, { "--latex-objects-left": "0px", "--latex-objects-top": "2px" });
+  d.key("input", "Escape");
+  assert.strictEqual(await p, null);
+});
+ta("prompt: Enter while an IME composes is not ours", async () => {
+  const d = fakeDom(), p = promptName(d.view, { placeholder: "", names: [] });
+  await new Promise(r => setTimeout(r, 5));
+  d.input.value = "frac";
+  d.key("input", "Enter", { isComposing: true });
+  d.key("input", "Enter");
+  assert.strictEqual(await p, "frac");
+});
+
+(async () => {
+  for (const [name, fn] of tests) {
+    try { await fn(); n++; } catch (e) { failed++; console.log(`FAIL  ${name}\n      ${String(e.message).split("\n").join("\n      ")}`); }
+  }
+  if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
+  console.log(`ok — ${n} tests`);
+})();

@@ -10,7 +10,7 @@ function rng(seed) { // mulberry32
   return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
-const TOKENS = ["$", "$", "$$", "\\", "\\$", "\\\\", "(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\begin{a}", "\\end{a}",
+const TOKENS = ["$", "$", "$$", "\\", "\\$", "\\\\", "(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\frac", "\\sqrt", "[n]", "\\alpha ", "\\mathbb", "\\begin{a}", "\\end{a}",
   "\\begin{b*}", "\\end{b*}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
 function doc(r) {
   let s = "";
@@ -61,6 +61,41 @@ try {
   for (let d = 0; d < DOCS; d++) {
     const src = doc(r), lines = src.split("\n");
     stats.docs++;
+    // commands: inside maths, the name is \name, arguments in order and inside their command,
+    // ending on a {…}; commands and arguments never cross
+    current = `doc ${d} commands ${JSON.stringify(src)}`;
+    const maths = C.mathSpans(lines), cmds = C.commandSpans(lines), args = cmds.flatMap(s => s.args);
+    for (const s of cmds) {
+      assert(maths.some(m => cmp(m.ae, s.a) <= 0 && cmp(s.b, m.bs) <= 0), "command outside maths");
+      assert.strictEqual(text(lines, s.a, s.ae), "\\" + s.name, "command name");
+      let prev = s.ae;
+      for (const g of s.args) {
+        assert(cmp(prev, g.a) <= 0 && cmp(g.a, g.ae) < 0 && cmp(g.ae, g.bs) <= 0 && cmp(g.bs, g.b) < 0, "argument out of order");
+        assert.strictEqual(text(lines, g.a, g.ae) + text(lines, g.bs, g.b), g.opt ? "[]" : "{}", "argument delimiters");
+        assert.strictEqual(g.cmd, s, "argument's command");
+        prev = g.b;
+      }
+      if (s.args.length) assert(!s.args[s.args.length - 1].opt, "command ends on an optional argument");
+      assert.deepStrictEqual(s.b, s.args.length ? s.args[s.args.length - 1].b : s.ae, "command end");
+    }
+    for (const list of [cmds, args]) for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+      const [x, y] = [list[i], list[j]];
+      const disjoint = cmp(x.b, y.a) <= 0 || cmp(y.b, x.a) <= 0;
+      const nested = (cmp(x.a, y.a) <= 0 && cmp(y.b, x.b) <= 0) || (cmp(y.a, x.a) <= 0 && cmp(x.b, y.b) <= 0);
+      assert(disjoint || nested, "crossing commands / arguments");
+    }
+    // %: from any delimiter, its partner leads back to it
+    current = `doc ${d} partner ${JSON.stringify(src)}`;
+    for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {
+      const d1 = C.delimAt(lines, at(l, ch));
+      if (!d1) continue;
+      assert(C.mayBeDelim(lines[l], ch), "mayBeDelim rejects a delimiter position");
+      current = `doc ${d} partner @${l}:${ch} ${JSON.stringify(src)}`;
+      const d2 = C.delimAt(lines, d1.there[0]);
+      assert(d2, "partner is not a delimiter");
+      assert.deepStrictEqual([d2.here, d2.there], [d1.there, d1.here], "partner does not lead back");
+      stats.picks++;
+    }
     for (const obj of ["math", "env", "paren", "brace", "square"]) {
       current = `doc ${d} ${obj} ${JSON.stringify(src)}`;
       const spans = C.SPANS[obj](lines);

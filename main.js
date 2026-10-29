@@ -1,4 +1,4 @@
-// Real Vim text objects for maths, LaTeX environments and brackets — they work with every
+// Real Vim text objects for maths, LaTeX environments, brackets and commands — they work with every
 // operator (d c y > gU …), in visual mode and with `.` repeat:
 //   im am   inm anm   ilm alm    maths   $…$ / $$…$$        (m = maths)
 //   iM aM   inM anM   ilM alM    display $$…$$ only (skips the $…$ on the way)
@@ -6,16 +6,20 @@
 //   ib ab   inb anb   ilb alb    ( )  \left( \right)          (n = next, l = last)
 //   iB aB   inB anB   ilB alB    { }  \{ \}  \left\{ \right\}
 //   ir ar   inr anr   ilr alr    [ ]  \left[ \right]  ⟦a; b⟧ intervals
+//   ic ac   inc anc   ilc alc    \name{…}[…]{…}: ic = one argument (on the name: the first), ac = the command
 // Every object SEEKS like mini.ai: the one around the cursor, else the CLOSEST one above or
 // below, within 50 lines. In visual mode, repeating one (vie ie ie) grows to the enclosing one.
 //   ]m [m   ]M [M   ]e [e   ]( [(   ]{ [{   jump to the next / previous maths, \begin, ( ), { } (counts, d]m …)
 //   ; ,   repeat the last of those jumps (, the other way) until an f F t T takes them back
+//   ]c [c   ]a [a   ]C [C   next / previous command, argument (lands inside), command by name (asks for it)
+//   %   on \begin \end, \left \right, $ $$: to the partner (marked while the cursor is on one); else Vim's %
 // Counts: 3iB = 3rd enclosing, 3inB / 3ilB = 3rd next / previous at the same level (nested
 // ones skipped), with operators too (d2iB, and . replays it). In visual with a selection,
 // inB / ilB step INTO it (first / last block inside), iB steps back out.
-//   ds cs on b B r ( ) { } [ ]    bracket surround that seeks and knows \left \right
+//   ds cs on b B r ( ) { } [ ] c    surround that seeks, knows \left \right, and dsc / csc commands
 // y > gU … flash what they hit for a moment. Plus editing commands (unwrap, delete, toggle,
-// align, rename, star, size) to bind to keys or call from a vimrc with :obcommand.
+// align, rename, star, size; delete / rename / wrap in a command) to bind to keys or call
+// from a vimrc with :obcommand.
 //
 // Works with Obsidian's built-in Vim mode and with the Vim Motions plugin; ds / cs on brackets
 // need Vim Motions (they extend its surround). Keymaps registered from Lua or a vimrc cancel a
@@ -31,8 +35,10 @@
 // idempotent and re-runs after every reload, on every note switch and when a setting changes.
 // All positions are {line, ch} (0-based, UTF-16 — the same units CodeMirror and Obsidian use).
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- no bundler: main.js is the plugin, loaded as CommonJS
 const obsidian = (() => { try { return require("obsidian"); } catch { return {}; } })(); // node tests
-const { Plugin = class {}, PluginSettingTab = class {}, Setting = class {}, Notice = class { constructor(m) { console.log(m); } } } = obsidian;
+const { Plugin = class {}, PluginSettingTab = class {}, Setting = class {}, Notice = class {} } = obsidian;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- no bundler: Obsidian provides @codemirror/* at runtime
 const cm6 = name => { try { return require(name); } catch { return null; } }; // null under node
 const CMState = cm6("@codemirror/state"), CMView = cm6("@codemirror/view");
 
@@ -161,8 +167,88 @@ function bracketSpans(lines) {
   return out;
 }
 
+// \name{…}[…]{…} inside maths: { kind: "command", name, a, ae, bs, b, args }, bs = b so that
+// ac (range around) is the whole command; args are argument spans { kind: "arg", opt, a, ae,
+// bs, b, cmd } shaped like a bracket span. Only braced groups count, a […] only when a {…}
+// follows it (\sqrt[n]{x} yes, \mathbb{R}[x] no). The sized delimiters and \begin \end are
+// other objects', not commands.
+const NOT_COMMANDS = /^(begin|end|left|right|middle|[bB]igg?[lrm]?)$/;
+// The first non-space position from p before `end`, newlines and a "> " line prefix included.
+function skipSpace(lines, p, end) {
+  for (let r = p.line; r <= end.line; r++) {
+    const line = lines[r], to = r === end.line ? end.ch : line.length;
+    for (let i = r === p.line ? p.ch : prefixOf(line).length; i < to; i++) if (!/\s/.test(line[i])) return at(r, i);
+  }
+  return null;
+}
+// Where each { or [ group from p to `end` ends ("line:ch" → position after its closer), in
+// one pass; one that doesn't close is missing. Braces nest; \x is skipped; a […] ends at the
+// first ] at its own brace depth and never takes a } it didn't open.
+function groupEnds(lines, p, end) {
+  const ends = new Map(), braces = [], squares = []; // squares[d]: the open [ at brace depth d
+  for (let r = p.line; r <= end.line; r++) {
+    const line = lines[r], to = r === end.line ? end.ch : line.length;
+    for (let i = r === p.line ? p.ch : 0; i < to; i++) {
+      const c = line[i];
+      if (c === "\\") { i++; continue; }
+      if (c === "{") braces.push(r + ":" + i);
+      else if (c === "[") (squares[braces.length] = squares[braces.length] || []).push(r + ":" + i);
+      else if (c === "]") { for (const k of squares[braces.length] || []) ends.set(k, at(r, i + 1)); squares[braces.length] = []; }
+      else if (c === "}") {
+        squares[braces.length] = []; // a [ inside this group never closes now
+        if (braces.length) ends.set(braces.pop(), at(r, i + 1));
+        else squares.length = 0; // an unopened }: nothing before it can close past it
+      }
+    }
+  }
+  return ends;
+}
+function commandSpans(lines) {
+  const out = [];
+  for (const m of mathSpans(lines)) {
+    const end = m.bs, ends = groupEnds(lines, m.ae, end);
+    for (let r = m.ae.line; r <= end.line; r++) {
+      const line = lines[r], to = r === end.line ? end.ch : line.length;
+      for (let i = r === m.ae.line ? m.ae.ch : 0; i < to; i++) {
+        if (line[i] !== "\\") continue;
+        const name = /^[A-Za-z]+/.exec(line.slice(i + 1, to));
+        if (!name) { i++; continue; }
+        const a = at(r, i), ae = at(r, i + 1 + name[0].length);
+        i = ae.ch - 1; // carry on inside the arguments: nested commands are found too
+        if (NOT_COMMANDS.test(name[0])) continue;
+        const args = [];
+        let p = ae, opts = [];
+        for (;;) {
+          const q = skipSpace(lines, p, end), c = q && lines[q.line][q.ch];
+          if (c !== "{" && c !== "[") break;
+          const e = ends.get(q.line + ":" + q.ch);
+          if (!e) break;
+          const g = { kind: "arg", opt: c === "[", a: q, ae: at(q.line, q.ch + 1), bs: at(e.line, e.ch - 1), b: e };
+          if (g.opt) opts.push(g);
+          else { args.push(...opts, g); opts = []; }
+          p = e;
+        }
+        const b = args.length ? args[args.length - 1].b : ae, s = { kind: "command", name: name[0], a, ae, bs: b, b, args };
+        for (const g of args) g.cmd = s;
+        out.push(s);
+      }
+    }
+  }
+  return out;
+}
+const argSpans = lines => commandSpans(lines).flatMap(s => s.args);
+const namedSpans = (lines, name) => commandSpans(lines).filter(s => s.name === name);
+// For the prompt's Tab: the names in the note's maths, most used first.
+function commandNames(lines) {
+  const n = new Map();
+  for (const s of commandSpans(lines)) n.set(s.name, (n.get(s.name) || 0) + 1);
+  return [...n].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).map(([k]) => k);
+}
 const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
-const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("[") };
+const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("["),
+  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans };
+// What a ]x / ; walks: an object's spans, or (]C / [C) the commands called `name`.
+const spansFor = (obj, lines, name) => (obj === "named" ? namedSpans(lines, name) : SPANS[obj](lines));
 
 // Is span s a better "nearest" than t for the cursor? Compared in order:
 //   1. lines between the cursor and the span's nearest edge (first char below, last char above)
@@ -185,7 +271,7 @@ function nearer(s, t, pos) {
 // (all three within CONFIG.seekLines).
 // Seeking stops CONFIG.seekLines lines from the cursor (default 50, mini.ai's n_lines), so an edit never
 // lands on maths you can't see; the span around the cursor is always found.
-const CONFIG = { seekLines: 50, flash: true, flashMs: 250 };   // the settings tab writes these
+const CONFIG = { seekLines: 50, flash: true, flashMs: 250, highlight: true };   // the settings tab writes these
 function pick(spans, pos, which) {
   let cur = null, next = null, last = null, near = null;
   for (const s of spans) {
@@ -228,6 +314,15 @@ function countPick(spans, lines, pos, which, inner, count) {
     : cmp(pos, s.b) >= 0 && pos.line - s.b.line <= CONFIG.seekLines));
   const s = nthSameLevel(cands, forward, count);
   return s && range(s, lines, inner);
+}
+
+// ic: on a command's name, its first argument; else the argument around / nearest, like iB.
+function icPick(lines, pos, which, count) {
+  if (which === "cur" && count === 1) {
+    const s = commandSpans(lines).find(c => c.args.length && cmp(c.a, pos) <= 0 && cmp(pos, c.ae) < 0);
+    if (s) return range(s.args[0], lines, true);
+  }
+  return countPick(argSpans(lines), lines, pos, which, true, count);
 }
 
 // Visual inB / ilB with a selection: the count-th block inside it (first / last), same level.
@@ -492,6 +587,33 @@ function around(spans, pos) {
   for (const s of spans) if (cmp(s.a, pos) <= 0 && cmp(pos, s.b) < 0 && (!best || cmp(s.a, best.a) > 0)) best = s;
   return best;
 }
+// %: the delimiter the cursor is on — \begin{…} / \end{…}, \left… / \right…, a $ / $$ —
+// as { here: [from, to), there: its partner's [from, to) }, or null (then % is Vim's).
+function delimAt(lines, pos) {
+  const on = (p, q) => cmp(p, pos) <= 0 && cmp(pos, q) < 0;
+  const lefts = bracketSpans(lines).filter(s => /^\\left/.test(slice(lines, s.a, s.ae)));
+  for (const s of [...envSpans(lines), ...lefts, ...mathSpans(lines)]) {
+    if (on(s.a, s.ae)) return { here: [s.a, s.ae], there: [s.bs, s.b] };
+    if (on(s.bs, s.b)) return { here: [s.bs, s.b], there: [s.a, s.ae] };
+  }
+  return null;
+}
+const partner = (lines, pos) => { const d = delimAt(lines, pos); return d && d.there[0]; };
+// The same for a CodeMirror doc, kept for the last doc and position: the highlight, then %
+// (matchKey, then the motion) all ask about the one the cursor is on — one scan between them.
+let delimMemo = null;
+function delimAtDoc(doc, pos) {
+  if (!delimMemo || delimMemo.doc !== doc || cmp(delimMemo.pos, pos)) delimMemo = { doc, pos, d: delimAt(doc.toString().split("\n"), pos) };
+  return delimMemo.d;
+}
+const delimAtCm = (cm, pos) => (cm.cm6 ? delimAtDoc(cm.cm6.state.doc, pos) : delimAt(lineArray(cm), pos));
+// Where % goes: after an operator, both delimiters and what is between (d% takes it all);
+// in visual mode going forward, the partner's last character; else its first.
+function matchTarget(d, op, visual) {
+  const [h, t] = [d.here, d.there], fwd = cmp(t[0], h[0]) > 0;
+  if (op) return fwd ? [h[0], t[1]] : [t[0], h[1]];
+  return visual && fwd ? at(t[1].line, t[1].ch - 1) : t[0];
+}
 
 // align ⇄ align*
 function starChanges(s) {
@@ -530,6 +652,33 @@ function surroundChanges(lines, s, target, repl, inMaths) {
   return [{ from: s.a, to: from, text: o }, { from: to, to: s.b, text: c }];
 }
 const inMathsAt = (lines, p) => mathSpans(lines).some(m => cmp(m.a, p) <= 0 && cmp(p, m.b) < 0);
+// ─── command surround: dsc / csc, and Wrap in command ────────────────────────
+// dsc keeps one argument: the one the cursor is in, else the first ([…] ones go with the command).
+const keptArg = (s, pos) => s.args.find(g => !g.opt && cmp(g.a, pos) <= 0 && cmp(pos, g.b) < 0) || s.args.find(g => !g.opt);
+const dscChanges = (lines, s, keep) => [{ from: s.a, to: s.b, text: slice(lines, keep.ae, keep.bs) }];
+const cscChanges = (s, name) => [{ from: at(s.a.line, s.a.ch + 1), to: s.ae, text: name }];
+const wrapChanges = (lines, from, to, name) => [{ from, to, text: "\\" + name + "{" + slice(lines, from, to) + "}" }];
+// The word under the cursor (letters and digits) as [from, to), or null.
+// A command name takes its \ along: wrapping alpha in $\alpha$ must give \mathbf{\alpha}.
+function wordAt(lines, p) {
+  const l = lines[p.line], w = /[\p{L}\p{N}]/u;
+  if (!w.test(l[p.ch] || "")) return null;
+  let i = p.ch, j = p.ch;
+  while (i > 0 && w.test(l[i - 1])) i--;
+  while (j < l.length && w.test(l[j])) j++;
+  if (l[i - 1] === "\\" && l[i - 2] !== "\\" && /^[a-zA-Z]+$/.test(l.slice(i, j))) i--;
+  return [at(p.line, i), at(p.line, j)];
+}
+// The charwise visual selection just left at the cursor (:obcommand from visual exits it first), or null.
+function lastVisual(cm, cur, lines) {
+  const ls = cm && cm.state && cm.state.vim && cm.state.vim.lastSelection;
+  if (!ls || ls.visualLine || ls.visualBlock || !ls.anchorMark || !ls.headMark) return null;
+  const a = ls.anchorMark.find && ls.anchorMark.find(), h = ls.headMark.find && ls.headMark.find();
+  if (!a || !h || (cmp(h, cur) && cmp(a, cur))) return null;
+  const [from, last] = cmp(a, h) <= 0 ? [a, h] : [h, a];
+  const l = lines[last.line];
+  return l == null ? null : [at(from.line, from.ch), at(last.line, Math.min(last.ch + 1, l.length))]; // Vim's selection includes its last character
+}
 
 // Size bracket: ( ) [ ] \{ \} ⇄ \left( \right) … — the nearest bracket of any kind that can be
 // sized (a bare { } is LaTeX grouping, the ⟦ ⟧ intervals and \big( \big) are sized already).
@@ -558,10 +707,11 @@ function visualEnd(lines, start, end) {
   return e && cmp(e, start) >= 0 ? e : null;
 }
 
-// ]m [m ]e [e: the count-th span starting after (forward) / before the cursor, or the last
+// ]m [m ]e [e ]c ]a …: the count-th span starting after (forward) / before the cursor, or the last
 // one that exists (like Vim's 9]] stopping at the last section). No seek limit: it only moves.
-function jump(spans, pos, forward, count = 1) {
-  const c = spans.filter(s => (forward ? cmp(s.a, pos) > 0 : cmp(s.a, pos) < 0)).sort((x, y) => (forward ? 1 : -1) * cmp(x.a, y.a));
+// `land`: where a span is reached (]a lands inside the argument, the rest on their start).
+function jump(spans, pos, forward, count = 1, land = s => s.a) {
+  const c = spans.filter(s => (forward ? cmp(land(s), pos) > 0 : cmp(land(s), pos) < 0)).sort((x, y) => (forward ? 1 : -1) * cmp(land(x), land(y)));
   return c[Math.min(count, c.length) - 1] || null;
 }
 
@@ -586,20 +736,26 @@ function grow(spans, lines, sel, inner) {
 
 // ─── Vim wiring ────────────────────────────────────────────────────────────────
 const KEYS = [];
-for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"]])
+// c is two span lists under one key: ic = one argument, ac = the whole command
+for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null]])
   for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
-    for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj, which, inner }]);
-const OBJ_KEYS = "mMebBr";
+    for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj: obj || (inner ? "arg" : "command"), which, inner }]);
+const OBJ_KEYS = "mMebBrc";
 // the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
 const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
+// ]C [C ask for a name; once it is typed, <LxGo> makes the move (as a ; would)
+const NAMED = [["]C", { forward: true }], ["[C", { forward: false }]], GO = [["<LxGo>", { forward: true }]];
+const MATCH = [["<LxPct>", {}]]; // the private key matchKey sends for % on our delimiters
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
   ["](", { obj: "paren", forward: true }], ["[(", { obj: "paren", forward: false }],
-  ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }]];
+  ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }],
+  ["]c", { obj: "command", forward: true }], ["[c", { obj: "command", forward: false }],
+  ["]a", { obj: "arg", forward: true }], ["[a", { obj: "arg", forward: false }]];
 
-const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor" };
+const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor" };
 const lineArray = cm => cm.getValue().split("\n");
 
 // The CM Vim adapter of an Obsidian editor. Vim Motions keeps it private (not on view.cm),
@@ -620,7 +776,7 @@ function latexObj(cm, head, args, vim, inputState) {
   const sel = vim.visualMode ? selection(lines, vim) : null;
   let r = sel && (args.which === "cur" ? growN(spans, lines, sel, args.inner, count) : shrink(spans, lines, sel, args.which, args.inner, count));
   if (!r) {
-    r = countPick(spans, lines, at(head.line, head.ch), args.which, args.inner, count);
+    r = args.obj === "arg" ? icPick(lines, at(head.line, head.ch), args.which, count) : countPick(spans, lines, at(head.line, head.ch), args.which, args.inner, count);
     if (!r) { new Notice(count > 1 ? `${NONE[args.obj]} (${count} wanted)` : NONE[args.obj]); return null; }
   }
   if (vim.visualMode) {
@@ -657,6 +813,10 @@ function latexObj(cm, head, args, vim, inputState) {
 // Visual mode with a selection (more than one character, linewise, or the one we just made)
 // as {start, last}, else null. A plain one-character selection is where `v` left you, so the
 // object seeks as usual; but the b of (b) that vib / inb selected still grows / steps.
+// The key being handled: was Vim in visual mode, where was the cursor. A mapped :obcommand
+// runs inside it, after Vim has changed both: a vnoremap'd one has left visual already, and
+// Vim Motions puts the last visual selection back even from normal mode (stale, anywhere).
+let keyAt = null;
 let madeSel = null; // "line:ch" of the last one-character visual object we returned
 function selection(lines, vim) {
   const { anchor, head } = vim.sel;
@@ -677,25 +837,64 @@ function growN(spans, lines, sel, inner, count) {
 }
 
 // ]m [m ]e [e — a motion, so d]m, y[e, v]m and counts work too.
-let lastJump = null; // {obj, forward} of the last ]x / [x, until an f F t T
+let lastJump = null; // {obj, forward, name?} of the last ]x / [x / ]C name, until an f F t T
 function latexJump(cm, head, args) {
-  if (!args.again) lastJump = { obj: args.obj, forward: args.forward };
-  const s = jump(SPANS[args.obj](lineArray(cm)), at(head.line, head.ch), args.forward, args.repeat || 1);
+  if (!args.again) lastJump = { obj: args.obj, forward: args.forward, name: args.name };
+  const land = args.obj === "arg" ? g => g.ae : x => x.a;
+  const s = jump(spansFor(args.obj, lineArray(cm), args.name), at(head.line, head.ch), args.forward, args.repeat || 1, land);
+  if (!s && args.obj === "named") new Notice(`No \\${args.name} ${args.forward ? "below" : "above"}`);
   // A plain jump (normal/visual, no d]m etc.) lands like `zz`, once Vim has moved the cursor.
   const view = cm.cm6;
-  if (s && view && CMView && !cm.state.vim?.inputState?.operator) setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
-  return s ? s.a : null;
+  if (s && view && CMView && !cm.state.vim?.inputState?.operator) view.dom.ownerDocument.defaultView.setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
+  return s ? land(s) : null;
 }
 
 // ; and , repeat the last ]x / [x (, the other way), else Vim's own f / t repeat.
-const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true });
+const againJump = (cm, head, args) => latexJump(cm, head, { obj: lastJump.obj, name: lastJump.name, forward: args.forward ? lastJump.forward : !lastJump.forward, repeat: args.repeat, again: true });
 function repeatJump(orig) {
   return (cm, head, args, vim, inputState) => lastJump ? againJump(cm, head, args) : orig(cm, head, args, vim, inputState);
+}
+// ]C [C: ask for a name, then jump like ]c to the next / previous \name; ; , repeat it.
+// The prompt answers after this motion has returned (null: nothing moves yet), so the move
+// is <LxGo>, with the count, in whatever mode Vim is in then (normal or visual).
+function latexNamedPrompt(cm, head, args, vim, inputState) {
+  if (inputState && inputState.operator) { new Notice("]C and [C work in normal and visual mode"); return null; }
+  const count = args.repeatIsExplicit ? args.repeat : 0;
+  promptName(cm.cm6, { placeholder: (args.forward ? "]C" : "[C") + "  command name", names: commandNames(lineArray(cm)) }).then(name => {
+    const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+    if (!name || !Vim) return;
+    lastJump = { obj: "named", name, forward: args.forward };
+    for (const k of count ? String(count) : "") Vim.handleKey(cm, k, "user");
+    Vim.handleKey(cm, "<LxGo>", "user");
+  });
+  return null;
+}
+// % on one of our delimiters (only matchKey sends it). . replaying d% somewhere else: nothing.
+function latexMatch(cm, head, args, vim, inputState) {
+  const d = delimAtCm(cm, at(head.line, head.ch));
+  if (!d) return null;
+  return matchTarget(d, !!(inputState && inputState.operator), !!vim.visualMode);
+}
+// % is caught here, in both Vims: on \begin \end, \left \right or $ $$ (no count typed:
+// 50% is Vim's) it becomes <LxPct>; anywhere else it goes on to Vim's own %.
+function matchKey(e, cm) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
+  if (e.key !== "%" || !active.match || !Vim || !vim || vim.insertMode || e.ctrlKey || e.metaKey || e.altKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
+  const st = vim.inputState;
+  if ((st.prefixRepeat || []).length || (st.motionRepeat || []).length || [].concat(st.keyBuffer || []).length) return false;
+  const head = vim.visualMode ? vim.sel.head : cm.getCursor();
+  if (!delimAtCm(cm, at(head.line, head.ch))) return false;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  Vim.handleKey(cm, "<LxPct>", "user");
+  return true;
 }
 // f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
-  if (stockKey(e, cm)) return;
+  if (holding || (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt"))) return; // typing a name
+  if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; window.setTimeout(() => (keyAt = null), 0); }
+  if (matchKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
 }
@@ -752,21 +951,52 @@ function flashRanges(doc, from, to) {
 function flashLater(cm, r) {
   const view = cm.cm6;
   if (!flashField || !view || !CONFIG.flash) return;
-  setTimeout(() => {
+  const win = view.dom.ownerDocument.defaultView;
+  win.setTimeout(() => {
     const doc = view.state.doc;
     const off = p => (p.line < doc.lines ? Math.min(doc.line(p.line + 1).from + p.ch, doc.line(p.line + 1).to) : doc.length);
     const from = off(r.start), to = off(r.end);
     if (from >= to || !view.dom.isConnected || !view.state.field(flashField, false)) return;
     view.dispatch({ effects: flashEffect.of({ from, to }) });
-    setTimeout(() => view.dom.isConnected && view.dispatch({ effects: flashEffect.of(null) }), CONFIG.flashMs);
+    win.setTimeout(() => view.dom.isConnected && view.dispatch({ effects: flashEffect.of(null) }), CONFIG.flashMs);
   }, 0);
 }
+
+// ─── Match highlight (like matchparen) ────────────────────────────────────────
+// The cursor on \begin{…} \end{…}, \left… \right… or $ / $$ marks it and its partner.
+// Only lines that could hold one get the full scan; big notes are skipped.
+// \begin{name} / \left( count as a whole, so the cursor anywhere on one passes (delimAt decides).
+// (its delimiter is never a \left / \right itself: \left\left( is two tokens, the ( in the second)
+const DELIM_TOKEN = /\\(?:begin|end)(?:\{[^}]*\})?|\\(?:left|right)\s*(?:([[\]])\s*\\!\s*\\(?:left|right)\s*\1|\\(?!(?:left|right)(?![a-zA-Z]))(?:[a-zA-Z]+|.)|[^\\])?/g;
+function mayBeDelim(line, ch) {
+  if (line[ch] === "$") return true;
+  for (const m of line.matchAll(DELIM_TOKEN)) if (ch >= m.index && ch < m.index + m[0].length) return true;
+  return false;
+}
+function matchDeco(view) {
+  const doc = view.state.doc;
+  if (!CONFIG.highlight || doc.lines > 5000) return CMView.Decoration.none;
+  const head = view.state.selection.main.head, line = doc.lineAt(head), ch = head - line.from;
+  if (!mayBeDelim(line.text, ch)) return CMView.Decoration.none;
+  const d = delimAtDoc(doc, at(line.number - 1, ch));
+  if (!d) return CMView.Decoration.none;
+  const off = p => doc.line(p.line + 1).from + p.ch, mark = CMView.Decoration.mark({ class: "latex-objects-match" });
+  return CMView.Decoration.set([d.here, d.there].map(([p, q]) => mark.range(off(p), off(q))), true);
+}
+const matchPlugin = CMView && CMView.ViewPlugin.fromClass(class {
+  constructor(view) { this.decorations = matchDeco(view); this.on = CONFIG.highlight; }
+  // The setting can flip with no cursor move (updateOptions): rebuild then too.
+  update(u) {
+    if (u.docChanged || u.selectionSet || this.on !== CONFIG.highlight) { this.on = CONFIG.highlight; this.decorations = matchDeco(u.view); }
+  }
+}, { decorations: v => v.decorations });
 
 // ds / cs go through Vim Motions' own "surroundAction" (keys s<character> after an operator):
 // wrap it, take bracket targets with d / c, hand everything else (ys, ds m, cs " ' …) back.
 function surroundAction(orig) {
   const fn = (cm, args, vim) => {
     const target = TARGET[args.selectedCharacter], op = args.pendingOperator;
+    if (args.selectedCharacter === "c" && (op === "delete" || op === "change")) return commandSurround(cm, op, vim);
     if (!target || (op !== "delete" && op !== "change")) return orig(cm, args, vim);
     const lines = lineArray(cm), head = cm.getCursor(), s = pick(SPANS[OBJ_OF[target]](lines), at(head.line, head.ch), "cur");
     if (!s) return new Notice(NONE[OBJ_OF[target]]);
@@ -784,6 +1014,21 @@ function surroundAction(orig) {
   fn.latexOrig = orig;
   return fn;
 }
+// dsc: the nearest command → the argument kept; csc: asks for its new name. . repeats csc
+// with the same name (kept on the input state . replays, like cs's replacement).
+function commandSurround(cm, op, vim) {
+  const lines = lineArray(cm), head = cm.getCursor(), pos = at(head.line, head.ch), s = pick(SPANS.command(lines), pos, "cur");
+  if (!s) return new Notice(NONE.command);
+  if (op === "delete") { dispatchChanges(cm, dscChanges(lines, s, keptArg(s, pos))); return cm.setCursor(s.a); }
+  const run = name => { dispatchChanges(cm, cscChanges(s, name)); cm.setCursor(s.a); };
+  const st = vim.lastEditInputState;
+  if (st && st._latexName) return run(st._latexName);
+  promptName(cm.cm6, { placeholder: "New name for \\" + s.name, names: commandNames(lines), star: true }).then(name => {
+    if (!name || cm.getValue() !== lines.join("\n")) return;
+    if (st) st._latexName = name;
+    run(name);
+  });
+}
 // The next typed character (AltGr / Shift / dead keys wait for it), or null on anything else.
 function nextKey(cb) {
   const on = e => {
@@ -795,6 +1040,79 @@ function nextKey(cb) {
   };
   window.addEventListener("keydown", on, true);
 }
+// ─── the name prompt (]C [C, csc, Wrap in command) ────────────────────────────
+// What was typed, a leading \ ignored; the names it completes to; their common start; and
+// whether it is a command name (letters, a trailing * when `star`: csc on align → align*).
+const unslash = s => s.replace(/^\\/, "");
+const completions = (typed, names) => names.filter(n => n.startsWith(unslash(typed)));
+function commonPrefix(list) {
+  if (!list.length) return "";
+  let p = list[0];
+  for (const s of list) while (!s.startsWith(p)) p = p.slice(0, -1);
+  return p;
+}
+const validName = (typed, star = false) => (star ? /^[A-Za-z]+\*?$/ : /^[A-Za-z]+$/).test(unslash(typed.trim()));
+// A one-line input at the cursor. Tab completes to the common start of the names, then
+// cycles them (Shift-Tab back); Enter accepts; Esc, an empty Enter or leaving it → null.
+// Its keys never reach Vim. Opened after the current key is handled (Vim is mid-key now);
+// keys typed before it is there are kept and go into it (onKeydown leaves them alone).
+let holding = 0;
+function promptName(view, { placeholder, names, star = false }) {
+  return new Promise(done => {
+    // the editor's own document: a popout window has its own
+    const doc = (view && view.dom && view.dom.ownerDocument) || (typeof document !== "undefined" && document);
+    if (!view || !doc) return done(null);
+    const early = [], win = doc.defaultView || doc;
+    const hold = e => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || !(e.key.length === 1 || ["Enter", "Escape", "Backspace"].includes(e.key))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      early.push(e.key);
+    };
+    win.addEventListener("keydown", hold, true);
+    holding++;
+    win.setTimeout(() => {
+      win.removeEventListener("keydown", hold, true);
+      holding--;
+      const c = view.coordsAtPos(view.state.selection.main.head) || { left: 0, bottom: 0 };
+      const input = doc.body.createEl("input", { cls: "latex-objects-prompt", attr: { placeholder } });
+      input.setCssProps({ "--latex-objects-left": c.left + "px", "--latex-objects-top": c.bottom + 2 + "px" });
+      let cycle = null, finished = false;
+      const finish = value => {
+        if (finished) return;
+        finished = true;
+        input.remove();
+        view.focus();
+        if (value === null || !unslash(value.trim())) return done(null);
+        if (!validName(value, star)) { new Notice(`Not a command name: ${value.trim()}`); return done(null); }
+        done(unslash(value.trim()));
+      };
+      input.addEventListener("keydown", e => {
+        e.stopPropagation();
+        if (e.isComposing) return; // an IME is still composing: its Enter is not ours
+        if (e.key === "Enter") { e.preventDefault(); finish(input.value); }
+        else if (e.key === "Escape") { e.preventDefault(); finish(null); }
+        else if (e.key === "Tab") {
+          e.preventDefault();
+          if (!cycle) {
+            const list = completions(input.value, names), p = commonPrefix(list);
+            if (!list.length) return;
+            if (p.length > unslash(input.value).length) { input.value = p; return; }
+            cycle = { list, k: e.shiftKey ? list.length - 1 : 0 };
+          } else cycle.k = (cycle.k + (e.shiftKey ? -1 : 1) + cycle.list.length) % cycle.list.length;
+          input.value = cycle.list[cycle.k];
+        } else cycle = null;
+      });
+      input.addEventListener("blur", () => finish(null));
+      input.focus();
+      for (const k of early) {
+        if (k === "Enter") return finish(input.value);
+        if (k === "Escape") return finish(null);
+        input.value = k === "Backspace" ? input.value.slice(0, -1) : input.value + k;
+      }
+    }, 0);
+  });
+}
 // One transaction = one undo step.
 function dispatchChanges(cm, changes) {
   const view = cm.cm6, off = p => cm.indexFromPos(p);
@@ -803,7 +1121,7 @@ function dispatchChanges(cm, changes) {
 
 // Idempotent: drop our keys, then add them (so they never pile up). The Vim object is looked
 // up fresh each time: Vim Motions deletes it when it unloads. `opts` says which groups are on.
-const OPTS = { jumps: true, repeatJumps: true, surround: true };
+const OPTS = { jumps: true, repeatJumps: true, surround: true, match: true };
 let active = OPTS; // the groups register() last turned on
 function register(opts = OPTS) {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
@@ -813,8 +1131,11 @@ function register(opts = OPTS) {
   Vim.defineMotion("latexObj", latexObj);
   Vim.defineMotion("latexJump", latexJump);
   Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
+  Vim.defineMotion("latexNamedPrompt", latexNamedPrompt);
+  Vim.defineMotion("latexMatch", latexMatch);
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
-  for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", repeats]]) for (const [keys, args] of list) {
+  for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
+    ["latexNamedPrompt", opts.jumps ? NAMED : []], ["latexMatch", opts.match ? MATCH : []]]) for (const [keys, args] of list) {
     dropKeys(Vim, keys);
     Vim.mapCommand(keys, "motion", motion, args);
   }
@@ -835,13 +1156,13 @@ function dropKeys(Vim, keys) {
 }
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS]) dropKeys(Vim, keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
 }
 
-const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, flash: true, flashMs: 250 };
+const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 };
 // Saved data → settings, bad or missing values back to their default.
 function cleanSettings(data) {
   const d = Object.assign({}, DEFAULTS, data || {}), out = {};
@@ -853,17 +1174,26 @@ function cleanSettings(data) {
   return out;
 }
 
+// Run from a normal-mode key, a command finds a selection only if Vim Motions' :obcommand put
+// the last visual one back: drop it, the cursor goes back where the key was pressed.
+function unstale(editor) {
+  const cm = vimAdapter(editor), vim = cm && cm.state && cm.state.vim;
+  if (!keyAt || keyAt.visual || !vim || vim.visualMode || !editor.somethingSelected()) return;
+  editor.setCursor(keyAt.cur);
+}
+
 class LatexObjects extends Plugin {
   async onload() {
     this.patched = [];
     await this.loadSettings();
     this.addSettingTab(new LatexObjectsSettings(this.app, this));
     if (flashField) this.registerEditorExtension(flashField);
+    if (matchPlugin) this.registerEditorExtension(matchPlugin);
     this.app.workspace.onLayoutReady(() => { this.patchReloads(); this.applyKeys(); });
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => { this.patchReloads(); this.applyKeys(); }));
     this.registerDomEvent(window, "keydown", e => onKeydown(e, this.app.workspace.activeEditor && vimAdapter(this.app.workspace.activeEditor.editor)), true);
 
-    const cmd = (id, name, fn) => this.addCommand({ id, name, editorCallback: editor => fn(editor) });
+    const cmd = (id, name, fn) => this.addCommand({ id, name, editorCallback: editor => { unstale(editor); fn(editor); } });
     cmd("unwrap-math", "Unwrap maths (delete $ / $$, keep the maths)", ed => this.edit(ed, "math", unwrapChanges));
     cmd("delete-math", "Delete maths with its $ / $$", ed => this.edit(ed, "math", deleteChanges));
     cmd("toggle-math", "Toggle inline / display maths", ed => this.edit(ed, "math", toggleChanges));
@@ -883,6 +1213,33 @@ class LatexObjects extends Plugin {
       if (!s) return new Notice("No ( ), [ ] or \\{ \\} near the cursor");
       this.commit(ed, lines, sizeChanges(lines, s), pos);
     });
+    cmd("delete-command", "Delete command, keep its argument", ed => this.edit(ed, "command", (l, s) => dscChanges(l, s, keptArg(s, ed.getCursor()))));
+    cmd("rename-command", "Rename command", ed => {
+      const f = this.find(ed, "command");
+      if (!f) return;
+      promptName(ed.cm, { placeholder: "New name for \\" + f.s.name, names: commandNames(f.lines), star: true }).then(name => {
+        if (name && ed.getValue() === f.lines.join("\n")) this.commit(ed, f.lines, cscChanges(f.s, name), f.pos);
+      });
+    });
+    cmd("wrap-command", "Wrap in command", ed => {
+      const lines = ed.getValue().split("\n"), sel = ed.listSelections()[0];
+      let [from, to] = cmp(sel.anchor, sel.head) <= 0 ? [sel.anchor, sel.head] : [sel.head, sel.anchor];
+      from = at(from.line, from.ch); to = at(to.line, to.ch);
+      const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
+      if (!cmp(from, to)) {
+        let w = null;
+        if (keyAt && keyAt.visual) try { w = lastVisual(cm, from, lines); } catch { /* private Vim state: never let it break the command */ }
+        w = w || wordAt(lines, from);
+        if (!w) return new Notice("Nothing to wrap: select text or put the cursor on a word");
+        [from, to] = w;
+      }
+      promptName(ed.cm, { placeholder: "Wrap in \\…{ }", names: commandNames(lines) }).then(name => {
+        if (!name || ed.getValue() !== lines.join("\n")) return;
+        if (cm && cm.state.vim && cm.state.vim.visualMode && Vim && Vim.exitVisualMode) Vim.exitVisualMode(cm);
+        ed.transaction({ changes: wrapChanges(lines, from, to, name) });
+        ed.setCursor(from);
+      });
+    });
   }
 
   onunload() {
@@ -892,13 +1249,18 @@ class LatexObjects extends Plugin {
 
   async loadSettings() {
     this.settings = cleanSettings(await this.loadData());
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+    this.applyConfig();
   }
   async saveSettings() {
     this.settings = cleanSettings(this.settings);
     await this.saveData(this.settings);
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+    this.applyConfig();
+    this.app.workspace.updateOptions(); // re-run editor extensions so the highlight setting applies now
     this.applyKeys();
+  }
+  applyConfig() {
+    const { seekLines, flash, flashMs, highlight } = this.settings;
+    Object.assign(CONFIG, { seekLines, flash, flashMs, highlight });
   }
   applyKeys() { register(this.settings); }
 
@@ -911,8 +1273,8 @@ class LatexObjects extends Plugin {
     for (const name of ["reloadAllConfigs", "softReloadVimrc", "softReloadLuaConfig"]) {
       const orig = vm[name];
       if (typeof orig !== "function") continue;
-      const plugin = this;
-      vm[name] = async function (...args) { try { return await orig.apply(this, args); } finally { plugin.applyKeys(); } };
+      const applyKeys = () => this.applyKeys();
+      vm[name] = async function (...args) { try { return await orig.apply(this, args); } finally { applyKeys(); } };
       this.patched.push([vm, name, orig]);
     }
     this.patched.push([vm, "__latexObjects", undefined]);
@@ -1006,12 +1368,16 @@ class LatexObjectsSettings extends PluginSettingTab {
       containerEl.createEl("p", { text: "Vim mode is off: the text objects need Settings → Editor → Vim key bindings, or the Vim Motions plugin. The commands work without it.", cls: "mod-warning" });
     new Setting(containerEl).setName("Seek distance").setDesc("How many lines above or below the cursor an object or a command looks for the nearest maths, environment or bracket.")
       .addText(t => t.setPlaceholder("50").setValue(String(p.settings.seekLines)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("seekLines", n); }));
-    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ jump to the next or previous maths, display maths, environment, parenthesis or brace.")
+    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ ]c [c ]a [a jump to the next or previous maths, display maths, environment, parenthesis, brace, command or argument; ]C [C to a command by name.")
       .addToggle(t => t.setValue(p.settings.jumps).onChange(v => { set("jumps", v); this.display(); }));
     if (p.settings.jumps) new Setting(containerEl).setName("Repeat jumps with ; and ,").setDesc("After a jump, ; repeats it and , goes the other way, until the next f F t T.")
       .addToggle(t => t.setValue(p.settings.repeatJumps).onChange(v => set("repeatJumps", v)));
-    new Setting(containerEl).setName("Bracket surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right. Needs the Vim Motions plugin.")
+    new Setting(containerEl).setName("Surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right; dsc deletes the nearest command and keeps its argument, csc renames it. Needs the Vim Motions plugin.")
       .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
+    new Setting(containerEl).setName("Match with %").setDesc("% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.")
+      .addToggle(t => t.setValue(p.settings.match).onChange(v => set("match", v)));
+    new Setting(containerEl).setName("Highlight matching delimiter").setDesc("With the cursor on \\begin{…} \\end{…}, \\left \\right or $ / $$, mark it and its partner.")
+      .addToggle(t => t.setValue(p.settings.highlight).onChange(v => set("highlight", v)));
     new Setting(containerEl).setName("Flash").setDesc("Highlight what y, >, gU … acted on for a moment.")
       .addToggle(t => t.setValue(p.settings.flash).onChange(v => { set("flash", v); this.display(); }));
     if (p.settings.flash) new Setting(containerEl).setName("Flash duration").setDesc("In milliseconds.")
@@ -1020,4 +1386,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };

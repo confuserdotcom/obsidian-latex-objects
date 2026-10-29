@@ -1,6 +1,6 @@
 # LaTeX Objects
 
-Vim text objects, jumps and editing commands for LaTeX in [Obsidian](https://obsidian.md): maths (`$…$`, `$$…$$`), environments (`\begin{…} … \end{…}`) and brackets (`( )`, `{ }`, `[ ]`, `\left( \right)`, `\{ \}`).
+Vim text objects, jumps and editing commands for LaTeX in [Obsidian](https://obsidian.md): maths (`$…$`, `$$…$$`), environments (`\begin{…} … \end{…}`) and brackets (`( )`, `{ }`, `[ ]`, `\left( \right)`, `\{ \}`), and commands (`\frac{a}{b}`, `\sqrt[n]{x}`).
 
 ![LaTeX Objects demo in Obsidian](docs/demo.gif)
 
@@ -18,6 +18,7 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 | `ib` `ab` | parentheses `( )`, `\left( \right)` |
 | `iB` `aB` | braces `{ }`, `\{ \}`, `\left\{ \right\}` |
 | `ir` `ar` | square brackets `[ ]`, `\left[ \right]`, and `⟦a; b⟧` intervals |
+| `ic` `ac` | command `\frac{a}{b}`, `\sqrt[n]{x}`: `ic` is one argument (on the name: the first), `ac` the whole command |
 
 `i` is the inside, `a` includes the delimiters. Put `n` or `l` in the middle for the **next** or **last** one: `dinm` deletes the inside of the next maths, `cilB` changes the inside of the previous braces.
 
@@ -35,10 +36,19 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 | `]e` `[e` | `\begin{…}` |
 | `](` `[(` | `( )` |
 | `]{` `[{` | `{ }` |
+| `]c` `[c` | command with arguments |
+| `]a` `[a` | argument: lands on its first character inside |
+| `]C` `[C` | command by name: type it (Tab completes from the note, Esc cancels), then Enter |
 
-They are motions: counts, operators (`d]m`) and visual mode work. After a jump, `;` repeats it and `,` goes the other way, until the next `f F t T`.
+They are motions: counts, operators (`d]m`) and visual mode work. After a jump, `;` repeats it and `,` goes the other way, until the next `f F t T`. `]C` `[C` work in normal and visual mode; `;` `,` repeat them too.
 
-## Bracket surround (with Vim Motions)
+## Matching
+
+`%` on `\begin{…}` / `\end{…}`, `\left…` / `\right…` or a `$` / `$$` goes to its partner, from any character of the delimiter. `d%` deletes both delimiters and what is between them. Anywhere else, and after a count (`50%`), `%` is Vim's own.
+
+While the cursor is on one of these delimiters, it and its partner are highlighted.
+
+## Surround (with Vim Motions)
 
 `ds` and `cs` on `b B r ( ) { } [ ]` seek the nearest bracket like `ib`, and know `\left \right`:
 
@@ -46,6 +56,11 @@ They are motions: counts, operators (`d]m`) and visual mode work. After a jump, 
 - `csbB` on `\left( x \right)` → `\left\{ x \right\}`
 - a `{ }` made inside maths is `\{ \}`, so it shows
 - like vim-surround, an opening target (`ds(`) trims the spaces inside, and an opening replacement (`cs b (`) puts one space inside
+
+`dsc` and `csc` work on the nearest command:
+
+- `dsc` on `\mathbf{x}` → `x`; on `\frac{a}{b}` it keeps the argument under the cursor (on the name: the first)
+- `csc` asks for the new name: `\mathbf{x}` → `\mathcal{x}`, and `.` repeats it with the same name
 
 Other surround keys (`ys`, `ds"` …) stay Vim Motions' own.
 
@@ -61,6 +76,9 @@ Other surround keys (`ys`, `ds"` …) stay Vim Motions' own.
 | Toggle environment star | `align` ⇄ `align*` |
 | Rename environment | type the new name in `\begin{}`; leaving insert mode copies it to `\end{}` (one undo step). `align` → `gather` drops the `&`, → `alignat` adds `{n}` |
 | Toggle `\left \right` on the nearest bracket | `( )` ⇄ `\left( \right)`, also `[ ]` and `\{ \}` |
+| Delete command, keep its argument | the `dsc` equivalent, also for Obsidian's own Vim |
+| Rename command | the `csc` equivalent, also for Obsidian's own Vim |
+| Wrap in command | the selection (or the word under the cursor) → `\name{…}`, asking for the name |
 
 The cursor stays on the character it was on. Every command is one undo step.
 
@@ -78,6 +96,10 @@ nnoremap <leader>le :obcommand latex-objects:unwrap-env<CR>
 nnoremap <leader>lr :obcommand latex-objects:rename-env<CR>
 nnoremap <leader>ls :obcommand latex-objects:star-env<CR>
 nnoremap <leader>lb :obcommand latex-objects:size-bracket<CR>
+nnoremap <leader>lx :obcommand latex-objects:delete-command<CR>
+nnoremap <leader>lc :obcommand latex-objects:rename-command<CR>
+nnoremap <leader>lw :obcommand latex-objects:wrap-command<CR>
+vnoremap <leader>lw :obcommand latex-objects:wrap-command<CR>
 ```
 
 With [Vimrc Support](https://github.com/esm7/obsidian-vimrc-support), wrap each command in an `exmap` first:
@@ -91,7 +113,8 @@ nmap <Space>lm :unwrapmath<CR>
 
 - **Seek distance**: how many lines away the nearest object is looked for (default 50, like mini.ai's `n_lines`). The one around the cursor is always found.
 - **Jumps** and **Repeat jumps with ; and ,**: turn `]m [m …` and the `; ,` repeat off if they clash with your own maps.
-- **Bracket surround**: turn the `ds` / `cs` bracket handling off.
+- **Surround**: turn the `ds` / `cs` handling of brackets and commands off.
+- **Match with %** and **Highlight matching delimiter**: turn `%` and the highlight off.
 - **Flash** and **Flash duration**.
 
 ## What counts as maths
@@ -101,6 +124,13 @@ nmap <Space>lm :unwrapmath<CR>
 - A backslash escapes the next character: `\$` is a dollar sign.
 - `$` inside code fences and inline code is text.
 - Blockquotes and callouts work: `> $$` is a delimiter on its own line.
+
+## What counts as a command
+
+- `\` and letters, inside maths. `\begin \end \left \right \middle \big …` are not commands: other objects own them.
+- Its arguments are the `{…}` groups right after it, spaces and line breaks allowed between them. A `[…]` counts only when a `{…}` follows it: `\sqrt[n]{x}` has two, `\mathbb{R}[x]` one.
+- Unbraced arguments (`\frac12`) are not arguments.
+- `]C` finds commands without arguments too (`\alpha`); `ic` `ac` `]c` `]a` `dsc` `csc` skip them.
 
 ## Install
 
@@ -115,9 +145,12 @@ No build step: `main.js` is the plugin.
 
 ```sh
 npm test          # unit tests + property tests on 1000 random notes
+npm run lint      # Obsidian's own review rules (eslint-plugin-obsidianmd)
 node fuzz.js 5000 # more random notes (a failure prints its seed to replay it)
 node e2e.mjs      # real key presses in a running Obsidian (see the header of e2e.mjs)
 ```
+
+The text objects, jumps and `%` hook into CodeMirror's Vim adapter (`window.CodeMirrorAdapter.Vim`), and with Vim Motions into its surround and config reload. Obsidian has no public API for Vim keys, so this is the only way in. Every patch is undone when the plugin is disabled.
 
 ## License
 
