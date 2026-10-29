@@ -487,9 +487,13 @@ t("vaB then anB: the child around, not the selection itself", () => assert.stric
 t("no child inside → null (falls back to seek)", () => assert.strictEqual(sh("{ab} {c}", { start: at(0, 1), last: at(0, 2) }, "next", 1), null));
 
 // ─── keys ───
-t("all 36 keys, unique", () => {
+t("all 42 keys, unique", () => {
   const k = KEYS.map(x => x[0]);
-  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ae", "alB", "alM", "alb", "ale", "alm", "alr", "am", "anB", "anM", "anb", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ie", "ilB", "ilM", "ilb", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "ine", "inm", "inr", "ir"]);
+  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ac", "ae", "alB", "alM", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "anb", "anc", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ic", "ie", "ilB", "ilM", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "inc", "ine", "inm", "inr", "ir"]);
+});
+t("ic is an argument, ac a command", () => {
+  const obj = key => KEYS.find(x => x[0] === key)[1].obj;
+  assert.deepStrictEqual(["ic", "inc", "ac", "alc"].map(obj), ["arg", "arg", "command", "command"]);
 });
 
 // ─── cursor after a Space l edit: stays on the same character ───
@@ -580,6 +584,20 @@ t("argSpans: every argument of every command", () => {
 t("SPANS.command skips commands without arguments", () => assert.deepStrictEqual(SPANS.command(L("$\\alpha \\hat{x}$")).map(c => c.name), ["hat"]));
 t("namedSpans: by name, with or without arguments", () => assert.deepStrictEqual(namedSpans(L("$\\alpha \\frac{a}{b} \\alpha$"), "alpha").map(c => c.a.ch), [1, 20]));
 t("commandNames: most frequent first, then alphabetical", () => assert.deepStrictEqual(commandNames(L("$\\frac{a}{b} \\beta \\frac{c}{d} \\alpha$")), ["frac", "alpha", "beta"]));
+
+// ─── ic / ac ───
+const { icPick } = require("./main.js").core;
+const ic = (s, pos, which = "cur", count = 1) => { const l = L(s), r = icPick(l, pos, which, count); return r && text(l, r.start, r.end); };
+const ac = (s, pos, count = 1) => { const l = L(s), r = countPick(SPANS.command(l), l, pos, "cur", false, count); return r && text(l, r.start, r.end); };
+t("ic: inside the argument around the cursor", () => assert.strictEqual(ic("$\\frac{ab}{c}$", at(0, 8)), "ab"));
+t("ic: on the name → the first argument", () => assert.strictEqual(ic("$\\frac{ab}{c}$", at(0, 3)), "ab"));
+t("ic: on a nested command's name → its own first argument", () => assert.strictEqual(ic("$\\frac{\\sqrt{x}}{y}$", at(0, 9)), "x"));
+t("2ic: the enclosing argument", () => assert.strictEqual(ic("$\\frac{\\sqrt{x}}{y}$", at(0, 13), "cur", 2), "\\sqrt{x}"));
+t("inc: the next argument", () => assert.strictEqual(ic("$\\frac{a}{b}$", at(0, 7), "next"), "b"));
+t("ic: seeks the nearest when not in one", () => assert.strictEqual(ic("$x \\hat{y}$", at(0, 1)), "y"));
+t("ic: nothing → null", () => assert.strictEqual(ic("$x$", at(0, 1)), null));
+t("ac: the whole command, optional argument included", () => assert.strictEqual(ac("$x + \\sqrt[n]{y}$", at(0, 12)), "\\sqrt[n]{y}"));
+t("2ac: the enclosing command", () => assert.strictEqual(ac("$\\frac{\\sqrt{x}}{y}$", at(0, 13), 2), "\\frac{\\sqrt{x}}{y}"));
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);

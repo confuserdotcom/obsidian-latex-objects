@@ -303,6 +303,15 @@ function countPick(spans, lines, pos, which, inner, count) {
   return s && range(s, lines, inner);
 }
 
+// ic: on a command's name, its first argument; else the argument around / nearest, like iB.
+function icPick(lines, pos, which, count) {
+  if (which === "cur" && count === 1) {
+    const s = commandSpans(lines).find(c => c.args.length && cmp(c.a, pos) <= 0 && cmp(pos, c.ae) < 0);
+    if (s) return range(s.args[0], lines, true);
+  }
+  return countPick(argSpans(lines), lines, pos, which, true, count);
+}
+
 // Visual inB / ilB with a selection: the count-th block inside it (first / last), same level.
 // null when nothing smaller fits inside — the caller then seeks as usual.
 function shrink(spans, lines, sel, which, inner, count) {
@@ -659,10 +668,11 @@ function grow(spans, lines, sel, inner) {
 
 // ─── Vim wiring ────────────────────────────────────────────────────────────────
 const KEYS = [];
-for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"]])
+// c is two span lists under one key: ic = one argument, ac = the whole command
+for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null]])
   for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
-    for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj, which, inner }]);
-const OBJ_KEYS = "mMebBr";
+    for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj: obj || (inner ? "arg" : "command"), which, inner }]);
+const OBJ_KEYS = "mMebBrc";
 // the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
 const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
@@ -672,7 +682,7 @@ const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", for
   ["](", { obj: "paren", forward: true }], ["[(", { obj: "paren", forward: false }],
   ["]{", { obj: "brace", forward: true }], ["[{", { obj: "brace", forward: false }]];
 
-const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor" };
+const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor" };
 const lineArray = cm => cm.getValue().split("\n");
 
 // The CM Vim adapter of an Obsidian editor. Vim Motions keeps it private (not on view.cm),
@@ -693,7 +703,7 @@ function latexObj(cm, head, args, vim, inputState) {
   const sel = vim.visualMode ? selection(lines, vim) : null;
   let r = sel && (args.which === "cur" ? growN(spans, lines, sel, args.inner, count) : shrink(spans, lines, sel, args.which, args.inner, count));
   if (!r) {
-    r = countPick(spans, lines, at(head.line, head.ch), args.which, args.inner, count);
+    r = args.obj === "arg" ? icPick(lines, at(head.line, head.ch), args.which, count) : countPick(spans, lines, at(head.line, head.ch), args.which, args.inner, count);
     if (!r) { new Notice(count > 1 ? `${NONE[args.obj]} (${count} wanted)` : NONE[args.obj]); return null; }
   }
   if (vim.visualMode) {
@@ -1093,4 +1103,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick };
