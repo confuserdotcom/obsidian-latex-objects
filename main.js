@@ -860,7 +860,7 @@ function latexMatch(cm, head, args, vim, inputState) {
 // 50% is Vim's) it becomes <LxPct>; anywhere else it goes on to Vim's own %.
 function matchKey(e, cm) {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
-  if (e.key !== "%" || !active.match || !Vim || !vim || vim.insertMode || e.ctrlKey || e.metaKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
+  if (e.key !== "%" || !active.match || !Vim || !vim || vim.insertMode || e.ctrlKey || e.metaKey || e.altKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
   const st = vim.inputState;
   if ((st.prefixRepeat || []).length || (st.motionRepeat || []).length || [].concat(st.keyBuffer || []).length) return false;
   const head = vim.visualMode ? vim.sel.head : cm.getCursor();
@@ -1001,7 +1001,7 @@ function commandSurround(cm, op, vim) {
   const run = name => { dispatchChanges(cm, cscChanges(s, name)); cm.setCursor(s.a); };
   const st = vim.lastEditInputState;
   if (st && st._latexName) return run(st._latexName);
-  promptName(cm.cm6, { placeholder: "csc  new name", names: commandNames(lines), star: true }).then(name => {
+  promptName(cm.cm6, { placeholder: "New name for \\" + s.name, names: commandNames(lines), star: true }).then(name => {
     if (!name || cm.getValue() !== lines.join("\n")) return;
     if (st) st._latexName = name;
     run(name);
@@ -1035,10 +1035,12 @@ const validName = (typed, star = false) => (star ? /^[A-Za-z]+\*?$/ : /^[A-Za-z]
 // Its keys never reach Vim. Opened after the current key is handled (Vim is mid-key now).
 function promptName(view, { placeholder, names, star = false }) {
   return new Promise(done => {
-    if (!view || typeof document === "undefined") return done(null);
+    // the editor's own document: a popout window has its own
+    const doc = (view && view.dom && view.dom.ownerDocument) || (typeof document !== "undefined" && document);
+    if (!view || !doc) return done(null);
     setTimeout(() => {
       const c = view.coordsAtPos(view.state.selection.main.head) || { left: 0, bottom: 0 };
-      const input = document.createElement("input");
+      const input = doc.createElement("input");
       input.className = "latex-objects-prompt";
       input.placeholder = placeholder;
       input.style.left = c.left + "px";
@@ -1050,11 +1052,12 @@ function promptName(view, { placeholder, names, star = false }) {
         input.remove();
         view.focus();
         if (value === null || !unslash(value.trim())) return done(null);
-        if (!validName(value, star)) { new Notice(`Not a command name: ${value}`); return done(null); }
+        if (!validName(value, star)) { new Notice(`Not a command name: ${value.trim()}`); return done(null); }
         done(unslash(value.trim()));
       };
       input.addEventListener("keydown", e => {
         e.stopPropagation();
+        if (e.isComposing) return; // an IME is still composing: its Enter is not ours
         if (e.key === "Enter") { e.preventDefault(); finish(input.value); }
         else if (e.key === "Escape") { e.preventDefault(); finish(null); }
         else if (e.key === "Tab") {
@@ -1069,7 +1072,7 @@ function promptName(view, { placeholder, names, star = false }) {
         } else cycle = null;
       });
       input.addEventListener("blur", () => finish(null));
-      document.body.appendChild(input);
+      doc.body.appendChild(input);
       input.focus();
     }, 0);
   });
@@ -1202,14 +1205,18 @@ class LatexObjects extends Plugin {
 
   async loadSettings() {
     this.settings = cleanSettings(await this.loadData());
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs, highlight: this.settings.highlight });
+    this.applyConfig();
   }
   async saveSettings() {
     this.settings = cleanSettings(this.settings);
     await this.saveData(this.settings);
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs, highlight: this.settings.highlight });
+    this.applyConfig();
     this.app.workspace.updateOptions(); // re-run editor extensions so the highlight setting applies now
     this.applyKeys();
+  }
+  applyConfig() {
+    const { seekLines, flash, flashMs, highlight } = this.settings;
+    Object.assign(CONFIG, { seekLines, flash, flashMs, highlight });
   }
   applyKeys() { register(this.settings); }
 
