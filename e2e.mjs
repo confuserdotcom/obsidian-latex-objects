@@ -1,7 +1,8 @@
 // Live end-to-end check: real key presses in a running Obsidian.
 //   1. start Obsidian with the debug port:   obsidian --remote-debugging-port=9222
 //   2. node e2e.mjs   (in a test vault with Vim Motions and the leader maps of README.md § vimrc,
-//      leader = Space: " lm" runs Unwrap maths, " le" Unwrap environment …)
+//      leader = Space: " lm" runs Unwrap maths, " le" Unwrap environment …, " lx" Delete command,
+//      " lc" Rename command, " lw" Wrap in command (also mapped in visual: vnoremap <leader>lw))
 //      Vim Motions with its defaults: clever-f (set flashcleverf) or a remapped D change what
 //      the f / ; and ]eD cases type, and those cases then fail without any bug here.
 // Uses a scratch note zz-latex-objects-e2e.md (deleted at the end). Prints PASS/FAIL per case.

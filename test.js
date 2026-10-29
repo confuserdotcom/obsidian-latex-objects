@@ -677,7 +677,7 @@ t("highlight: cheap test before the full scan", () => {
 });
 
 // ─── dsc / csc / wrap ───
-const { dscChanges, cscChanges, wrapChanges, keptArg, wordAt } = require("./main.js").core;
+const { dscChanges, cscChanges, wrapChanges, keptArg, wordAt, lastVisual } = require("./main.js").core;
 const cmdAt = (l, pos) => pick(SPANS.command(l), pos, "cur");
 t("dsc keeps the argument under the cursor", () => {
   const l = L("$\\frac{a}{b}$"), p = at(0, 10), s = cmdAt(l, p);
@@ -699,6 +699,23 @@ t("wrap: \\name{…} around the range", () => {
 t("wordAt: the word under the cursor, null on a space", () => {
   assert.deepStrictEqual(wordAt(L("$ab + c$"), at(0, 2)), [at(0, 1), at(0, 3)]);
   assert.strictEqual(wordAt(L("$ab + c$"), at(0, 3)), null);
+});
+t("wordAt: a command name takes its \\ along (not after \\\\, not with digits)", () => {
+  assert.deepStrictEqual(wordAt(L("$\\alpha$"), at(0, 3)), [at(0, 1), at(0, 7)]);
+  assert.deepStrictEqual(wordAt(L("$ab$"), at(0, 1)), [at(0, 1), at(0, 3)]);
+  assert.deepStrictEqual(wordAt(L("a\\\\b"), at(0, 3)), [at(0, 3), at(0, 4)]);
+  assert.deepStrictEqual(wordAt(L("$\\x2$"), at(0, 2)), [at(0, 2), at(0, 4)]);
+});
+t("lastVisual: the charwise selection just left at the cursor, inclusive; else null", () => {
+  const mk = (a, h, extra = {}) => ({ state: { vim: { lastSelection: { anchorMark: { find: () => a }, headMark: { find: () => h }, ...extra } } } });
+  const l = L("$a+b$");
+  assert.deepStrictEqual(lastVisual(mk(at(0, 1), at(0, 3)), at(0, 3), l), [at(0, 1), at(0, 4)]);
+  assert.deepStrictEqual(lastVisual(mk(at(0, 3), at(0, 1)), at(0, 1), l), [at(0, 1), at(0, 4)]);
+  assert.strictEqual(lastVisual(mk(at(0, 1), at(0, 3)), at(0, 0), l), null);
+  assert.strictEqual(lastVisual(mk(at(0, 1), at(0, 3), { visualLine: true }), at(0, 3), l), null);
+  assert.strictEqual(lastVisual(mk(undefined, at(0, 3)), at(0, 3), l), null);
+  assert.strictEqual(lastVisual({ state: { vim: {} } }, at(0, 3), l), null);
+  assert.strictEqual(lastVisual(null, at(0, 3), l), null);
 });
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }

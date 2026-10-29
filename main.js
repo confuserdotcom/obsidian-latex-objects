@@ -1,4 +1,4 @@
-// Real Vim text objects for maths, LaTeX environments and brackets — they work with every
+// Real Vim text objects for maths, LaTeX environments, brackets and commands — they work with every
 // operator (d c y > gU …), in visual mode and with `.` repeat:
 //   im am   inm anm   ilm alm    maths   $…$ / $$…$$        (m = maths)
 //   iM aM   inM anM   ilM alM    display $$…$$ only (skips the $…$ on the way)
@@ -18,7 +18,8 @@
 // inB / ilB step INTO it (first / last block inside), iB steps back out.
 //   ds cs on b B r ( ) { } [ ] c    surround that seeks, knows \left \right, and dsc / csc commands
 // y > gU … flash what they hit for a moment. Plus editing commands (unwrap, delete, toggle,
-// align, rename, star, size) to bind to keys or call from a vimrc with :obcommand.
+// align, rename, star, size; delete / rename / wrap in a command) to bind to keys or call
+// from a vimrc with :obcommand.
 //
 // Works with Obsidian's built-in Vim mode and with the Vim Motions plugin; ds / cs on brackets
 // need Vim Motions (they extend its surround). Keymaps registered from Lua or a vimrc cancel a
@@ -643,13 +644,25 @@ const dscChanges = (lines, s, keep) => [{ from: s.a, to: s.b, text: slice(lines,
 const cscChanges = (s, name) => [{ from: at(s.a.line, s.a.ch + 1), to: s.ae, text: name }];
 const wrapChanges = (lines, from, to, name) => [{ from, to, text: "\\" + name + "{" + slice(lines, from, to) + "}" }];
 // The word under the cursor (letters and digits) as [from, to), or null.
+// A command name takes its \ along: wrapping alpha in $\alpha$ must give \mathbf{\alpha}.
 function wordAt(lines, p) {
   const l = lines[p.line], w = /[\p{L}\p{N}]/u;
   if (!w.test(l[p.ch] || "")) return null;
   let i = p.ch, j = p.ch;
   while (i > 0 && w.test(l[i - 1])) i--;
   while (j < l.length && w.test(l[j])) j++;
+  if (l[i - 1] === "\\" && l[i - 2] !== "\\" && /^[a-zA-Z]+$/.test(l.slice(i, j))) i--;
   return [at(p.line, i), at(p.line, j)];
+}
+// The charwise visual selection just left at the cursor (:obcommand from visual exits it first), or null.
+function lastVisual(cm, cur, lines) {
+  const ls = cm && cm.state && cm.state.vim && cm.state.vim.lastSelection;
+  if (!ls || ls.visualLine || ls.visualBlock || !ls.anchorMark || !ls.headMark) return null;
+  const a = ls.anchorMark.find && ls.anchorMark.find(), h = ls.headMark.find && ls.headMark.find();
+  if (!a || !h || (cmp(h, cur) && cmp(a, cur))) return null;
+  const [from, last] = cmp(a, h) <= 0 ? [a, h] : [h, a];
+  const l = lines[last.line];
+  return l == null ? null : [at(from.line, from.ch), at(last.line, Math.min(last.ch + 1, l.length))]; // Vim's selection includes its last character
 }
 
 // Size bracket: ( ) [ ] \{ \} ⇄ \left( \right) … — the nearest bracket of any kind that can be
@@ -841,9 +854,7 @@ function latexNamedPrompt(cm, head, args, vim, inputState) {
 function latexMatch(cm, head, args, vim, inputState) {
   const d = delimAt(lineArray(cm), at(head.line, head.ch));
   if (!d) return null;
-  const op = !!(inputState && inputState.operator);
-  if (op) args.inclusive = false;
-  return matchTarget(d, op, !!vim.visualMode);
+  return matchTarget(d, !!(inputState && inputState.operator), !!vim.visualMode);
 }
 // % is caught here, in both Vims: on \begin \end, \left \right or $ $$ (no count typed:
 // 50% is Vim's) it becomes <LxPct>; anywhere else it goes on to Vim's own %.
@@ -1167,12 +1178,14 @@ class LatexObjects extends Plugin {
       const lines = ed.getValue().split("\n"), sel = ed.listSelections()[0];
       let [from, to] = cmp(sel.anchor, sel.head) <= 0 ? [sel.anchor, sel.head] : [sel.head, sel.anchor];
       from = at(from.line, from.ch); to = at(to.line, to.ch);
+      const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
       if (!cmp(from, to)) {
-        const w = wordAt(lines, from);
+        let w = null;
+        try { w = lastVisual(cm, from, lines); } catch (e) {} // private Vim state: never let it break the command
+        w = w || wordAt(lines, from);
         if (!w) return new Notice("Nothing to wrap: select text or put the cursor on a word");
         [from, to] = w;
       }
-      const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
       promptName(ed.cm, { placeholder: "Wrap in \\…{ }", names: commandNames(lines) }).then(name => {
         if (!name || ed.getValue() !== lines.join("\n")) return;
         if (cm && cm.state.vim && cm.state.vim.visualMode && Vim && Vim.exitVisualMode) Vim.exitVisualMode(cm);
@@ -1322,4 +1335,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };

@@ -76,8 +76,8 @@ Other surround keys (`ys`, `ds"` …) stay Vim Motions' own.
 | Toggle environment star | `align` ⇄ `align*` |
 | Rename environment | type the new name in `\begin{}`; leaving insert mode copies it to `\end{}` (one undo step). `align` → `gather` drops the `&`, → `alignat` adds `{n}` |
 | Toggle `\left \right` on the nearest bracket | `( )` ⇄ `\left( \right)`, also `[ ]` and `\{ \}` |
-| Delete command, keep its argument | `dsc`, for Obsidian's own Vim too |
-| Rename command | `csc`, for Obsidian's own Vim too |
+| Delete command, keep its argument | the `dsc` equivalent, also for Obsidian's own Vim |
+| Rename command | the `csc` equivalent, also for Obsidian's own Vim |
 | Wrap in command | the selection (or the word under the cursor) → `\name{…}`, asking for the name |
 
 The cursor stays on the character it was on. Every command is one undo step.
