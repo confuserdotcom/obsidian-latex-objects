@@ -35,8 +35,10 @@
 // idempotent and re-runs after every reload, on every note switch and when a setting changes.
 // All positions are {line, ch} (0-based, UTF-16 — the same units CodeMirror and Obsidian use).
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- no bundler: main.js is the plugin, loaded as CommonJS
 const obsidian = (() => { try { return require("obsidian"); } catch { return {}; } })(); // node tests
-const { Plugin = class {}, PluginSettingTab = class {}, Setting = class {}, Notice = class { constructor(m) { console.log(m); } } } = obsidian;
+const { Plugin = class {}, PluginSettingTab = class {}, Setting = class {}, Notice = class {} } = obsidian;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- no bundler: Obsidian provides @codemirror/* at runtime
 const cm6 = name => { try { return require(name); } catch { return null; } }; // null under node
 const CMState = cm6("@codemirror/state"), CMView = cm6("@codemirror/view");
 
@@ -843,7 +845,7 @@ function latexJump(cm, head, args) {
   if (!s && args.obj === "named") new Notice(`No \\${args.name} ${args.forward ? "below" : "above"}`);
   // A plain jump (normal/visual, no d]m etc.) lands like `zz`, once Vim has moved the cursor.
   const view = cm.cm6;
-  if (s && view && CMView && !cm.state.vim?.inputState?.operator) setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
+  if (s && view && CMView && !cm.state.vim?.inputState?.operator) view.dom.ownerDocument.defaultView.setTimeout(() => view.dispatch({ effects: CMView.EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) }));
   return s ? land(s) : null;
 }
 
@@ -891,7 +893,7 @@ function matchKey(e, cm) {
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
   if (holding || (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt"))) return; // typing a name
-  if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; setTimeout(() => (keyAt = null), 0); }
+  if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; window.setTimeout(() => (keyAt = null), 0); }
   if (matchKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
@@ -949,13 +951,14 @@ function flashRanges(doc, from, to) {
 function flashLater(cm, r) {
   const view = cm.cm6;
   if (!flashField || !view || !CONFIG.flash) return;
-  setTimeout(() => {
+  const win = view.dom.ownerDocument.defaultView;
+  win.setTimeout(() => {
     const doc = view.state.doc;
     const off = p => (p.line < doc.lines ? Math.min(doc.line(p.line + 1).from + p.ch, doc.line(p.line + 1).to) : doc.length);
     const from = off(r.start), to = off(r.end);
     if (from >= to || !view.dom.isConnected || !view.state.field(flashField, false)) return;
     view.dispatch({ effects: flashEffect.of({ from, to }) });
-    setTimeout(() => view.dom.isConnected && view.dispatch({ effects: flashEffect.of(null) }), CONFIG.flashMs);
+    win.setTimeout(() => view.dom.isConnected && view.dispatch({ effects: flashEffect.of(null) }), CONFIG.flashMs);
   }, 0);
 }
 
@@ -1225,7 +1228,7 @@ class LatexObjects extends Plugin {
       const cm = vimAdapter(ed), Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
       if (!cmp(from, to)) {
         let w = null;
-        if (keyAt && keyAt.visual) try { w = lastVisual(cm, from, lines); } catch (e) {} // private Vim state: never let it break the command
+        if (keyAt && keyAt.visual) try { w = lastVisual(cm, from, lines); } catch { /* private Vim state: never let it break the command */ }
         w = w || wordAt(lines, from);
         if (!w) return new Notice("Nothing to wrap: select text or put the cursor on a word");
         [from, to] = w;
@@ -1270,8 +1273,8 @@ class LatexObjects extends Plugin {
     for (const name of ["reloadAllConfigs", "softReloadVimrc", "softReloadLuaConfig"]) {
       const orig = vm[name];
       if (typeof orig !== "function") continue;
-      const plugin = this;
-      vm[name] = async function (...args) { try { return await orig.apply(this, args); } finally { plugin.applyKeys(); } };
+      const applyKeys = () => this.applyKeys();
+      vm[name] = async function (...args) { try { return await orig.apply(this, args); } finally { applyKeys(); } };
       this.patched.push([vm, name, orig]);
     }
     this.patched.push([vm, "__latexObjects", undefined]);

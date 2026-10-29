@@ -145,6 +145,7 @@ No build step: `main.js` is the plugin.
 
 ```sh
 npm test          # unit tests + property tests on 1000 random notes
+npm run lint      # Obsidian's own review rules (eslint-plugin-obsidianmd)
 node fuzz.js 5000 # more random notes (a failure prints its seed to replay it)
 node e2e.mjs      # real key presses in a running Obsidian (see the header of e2e.mjs)
 ```
