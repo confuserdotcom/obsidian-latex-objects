@@ -487,18 +487,18 @@ t("vaB then anB: the child around, not the selection itself", () => assert.stric
 t("no child inside → null (falls back to seek)", () => assert.strictEqual(sh("{ab} {c}", { start: at(0, 1), last: at(0, 2) }, "next", 1), null));
 
 // ─── keys ───
-t("all 54 keys, unique", () => {
+t("all 66 keys, unique", () => {
   const k = KEYS.map(x => x[0]);
-  assert.deepStrictEqual(k.sort(), ["aB", "aM", "a^", "a_", "ab", "ac", "ae", "alB", "alM", "al^", "al_", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "an^", "an_", "anb", "anc", "ane", "anm", "anr", "ar",
-    "iB", "iM", "i^", "i_", "ib", "ic", "ie", "ilB", "ilM", "il^", "il_", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "in^", "in_", "inb", "inc", "ine", "inm", "inr", "ir"]);
+  assert.deepStrictEqual(k.sort(), ["a&", "aB", "aM", "aR", "a^", "a_", "ab", "ac", "ae", "al&", "alB", "alM", "alR", "al^", "al_", "alb", "alc", "ale", "alm", "alr", "am", "an&", "anB", "anM", "anR", "an^", "an_", "anb", "anc", "ane", "anm", "anr", "ar",
+    "i&", "iB", "iM", "iR", "i^", "i_", "ib", "ic", "ie", "il&", "ilB", "ilM", "ilR", "il^", "il_", "ilb", "ilc", "ile", "ilm", "ilr", "im", "in&", "inB", "inM", "inR", "in^", "in_", "inb", "inc", "ine", "inm", "inr", "ir"]);
 });
 t("ic is an argument, ac a command", () => {
   const obj = key => KEYS.find(x => x[0] === key)[1].obj;
   assert.deepStrictEqual(["ic", "inc", "ac", "alc"].map(obj), ["arg", "arg", "command", "command"]);
 });
-t("i^ i_ are sup, sub", () => {
+t("i^ i_ i& iR are sup, sub, cell, row", () => {
   const obj = key => KEYS.find(x => x[0] === key)[1].obj;
-  assert.deepStrictEqual(["i^", "a_", "in^", "al_"].map(obj), ["sup", "sub", "sup", "sub"]);
+  assert.deepStrictEqual(["i^", "a_", "in&", "alR"].map(obj), ["sup", "sub", "cell", "row"]);
 });
 
 // ─── cursor after a Space l edit: stays on the same character ───
@@ -836,6 +836,32 @@ t("scripts: a braced group over lines in $$", () => assert.deepStrictEqual(scrip
 t("SPANS.sup / SPANS.sub split by type", () => {
   assert.deepStrictEqual(SPANS.sup(L("$x_a^b$")).map(s => s.type), ["^"]);
   assert.deepStrictEqual(SPANS.sub(L("$x_a^b$")).map(s => s.type), ["_"]);
+});
+const { rowSpans, cellSpans } = require("./main.js").core;
+const table = s => { const l = L(s); return rowSpans(l).map(r => [text(l, r.ae, r.bs), text(l, r.a, r.b), r.cells.map(c => [text(l, c.ae, c.bs), text(l, c.a, c.b)])]); };
+t("rows / cells: one line", () => assert.deepStrictEqual(table("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}"), [
+  ["a & b", "a & b \\\\", [["a", "a & "], ["b", " & b"]]],
+  ["c & d", " \\\\ c & d", [["c", "c & "], ["d", " & d"]]]]));
+t("rows: own lines, a trailing \\\\ makes no empty row", () => assert.deepStrictEqual(table("$$\n\\begin{align}\nx &= 1 \\\\\ny &= 2 \\\\\n\\end{align}\n$$").map(r => r.slice(0, 2)),
+  [["x &= 1", "x &= 1 \\\\"], ["y &= 2", "y &= 2 \\\\"]]));
+t("rows: \\\\[2pt] is one separator", () => assert.deepStrictEqual(table("\\begin{align}a \\\\[2pt] b\\end{align}").map(r => r.slice(0, 2)), [["a", "a \\\\[2pt]"], ["b", " \\\\[2pt] b"]]));
+t("cells: & in braces, in a nested env and \\& are not separators", () => {
+  const rows = table("\\begin{pmatrix} {a & b} & \\begin{cases} x & y \\end{cases} & c \\& d \\end{pmatrix}");
+  assert.deepStrictEqual(rows.find(r => r[0].startsWith("{a")).at(2).map(c => c[0]), ["{a & b}", "\\begin{cases} x & y \\end{cases}", "c \\& d"]);
+  assert.deepStrictEqual(rows.find(r => r[0] === "x & y").at(2).map(c => c[0]), ["x", "y"]);
+});
+t("cells: an empty cell is empty at its place", () => {
+  const l = L("\\begin{matrix}a & & b\\end{matrix}"), c = cellSpans(l)[1];
+  assert.deepStrictEqual([c.ae, c.bs], [at(0, 17), at(0, 17)]);
+});
+t("cells: one-cell row: a& is just the cell", () => assert.deepStrictEqual(table("\\begin{align}a \\\\ b\\end{align}")[0][2], [["a", "a"]]));
+t("cells: array's column spec is not a cell", () => assert.deepStrictEqual(table("\\begin{array}{cc} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]));
+t("tables: an environment without & or \\\\ has no rows", () => assert.deepStrictEqual(table("\\begin{equation} x \\end{equation}"), []));
+t("tables: callout prefixes are not cell text", () => assert.deepStrictEqual(table("> $$\n> \\begin{matrix}\n> a & b\n> \\end{matrix}\n> $$")[0][0], "a & b"));
+t("range: aR on a row alone on its line is linewise", () => {
+  const l = L("\\begin{align}\nx \\\\\ny\n\\end{align}"), [r0, r1] = rowSpans(l);
+  assert.deepStrictEqual(range(r0, l, false), { start: at(1, 0), end: at(1, 4), linewise: true });
+  assert.deepStrictEqual(range(r1, l, false), { start: at(1, 1), end: at(2, 1) });
 });
 
 (async () => {

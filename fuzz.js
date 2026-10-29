@@ -103,6 +103,15 @@ try {
       }
       stats.spans++;
     }
+    current = `doc ${d} tables ${JSON.stringify(src)}`;
+    for (const row of C.rowSpans(lines)) {
+      assert(ordered(row), "row out of order");
+      for (const c of row.cells) {
+        assert(ordered(c) && c.row === row, "cell out of order");
+        assert(cmp(row.ae, c.ae) <= 0 && cmp(c.bs, row.bs) <= 0, "cell outside its row");
+      }
+      stats.spans += 1 + row.cells.length;
+    }
     // %: from any delimiter, its partner leads back to it
     current = `doc ${d} partner ${JSON.stringify(src)}`;
     for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {
