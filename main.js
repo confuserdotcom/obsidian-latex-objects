@@ -237,6 +237,37 @@ function commandSpans(lines) {
   return out;
 }
 const argSpans = lines => commandSpans(lines).flatMap(s => s.args);
+// x_{n+1}, x^2, x^\alpha in maths: the _ / ^ and its group, or its one token (a character,
+// \name, or \ and a character). As spans { kind: "script", type: "^" | "_", a, ae, bs, b }.
+function scriptSpans(lines) {
+  const out = [];
+  for (const m of mathSpans(lines)) {
+    const end = m.bs, ends = groupEnds(lines, m.ae, end);
+    for (let r = m.ae.line; r <= end.line; r++) {
+      const line = lines[r], to = r === end.line ? end.ch : line.length;
+      for (let i = r === m.ae.line ? m.ae.ch : 0; i < to; i++) {
+        const c = line[i];
+        if (c === "\\") { i++; continue; }
+        if (c !== "^" && c !== "_") continue;
+        const q = skipSpace(lines, at(r, i + 1), end);
+        if (!q) continue;
+        const t = lines[q.line], k = t[q.ch], qto = q.line === end.line ? end.ch : t.length;
+        if ("}^_&".includes(k)) continue;
+        let ae = q, bs, b;
+        if (k === "{") {
+          const e = ends.get(q.line + ":" + q.ch);
+          if (!e) continue;
+          ae = at(q.line, q.ch + 1); bs = at(e.line, e.ch - 1); b = e;
+        } else {
+          const n = k === "\\" ? 1 + ((/^[A-Za-z]+/.exec(t.slice(q.ch + 1, qto)) || ["."])[0].length) : isHigh(t, q.ch) ? 2 : 1;
+          bs = b = at(q.line, Math.min(q.ch + n, qto));
+        }
+        out.push({ kind: "script", type: c, a: at(r, i), ae, bs, b });
+      }
+    }
+  }
+  return out;
+}
 const namedSpans = (lines, name) => commandSpans(lines).filter(s => s.name === name);
 // For the prompt's Tab: the names in the note's maths, most used first.
 function commandNames(lines) {
@@ -246,7 +277,8 @@ function commandNames(lines) {
 }
 const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
 const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("["),
-  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans };
+  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans,
+  sup: l => scriptSpans(l).filter(s => s.type === "^"), sub: l => scriptSpans(l).filter(s => s.type === "_") };
 // What a ]x / ; walks: an object's spans, or (]C / [C) the commands called `name`.
 const spansFor = (obj, lines, name) => (obj === "named" ? namedSpans(lines, name) : SPANS[obj](lines));
 
@@ -737,10 +769,11 @@ function grow(spans, lines, sel, inner) {
 // ─── Vim wiring ────────────────────────────────────────────────────────────────
 const KEYS = [];
 // c is two span lists under one key: ic = one argument, ac = the whole command
-for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null]])
+for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null],
+  ["^", "sup"], ["_", "sub"]])
   for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
     for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj: obj || (inner ? "arg" : "command"), which, inner }]);
-const OBJ_KEYS = "mMebBrc";
+const OBJ_KEYS = "mMebBrc^_";
 // the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
 const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
@@ -755,7 +788,8 @@ const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", for
   ["]c", { obj: "command", forward: true }], ["[c", { obj: "command", forward: false }],
   ["]a", { obj: "arg", forward: true }], ["[a", { obj: "arg", forward: false }]];
 
-const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor" };
+const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor",
+  sup: "No ^ near the cursor", sub: "No _ near the cursor" };
 const lineArray = cm => cm.getValue().split("\n");
 
 // The CM Vim adapter of an Obsidian editor. Vim Motions keeps it private (not on view.cm),
@@ -1386,4 +1420,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
+module.exports.core = { scriptSpans, mathSpans,envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };

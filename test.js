@@ -487,13 +487,18 @@ t("vaB then anB: the child around, not the selection itself", () => assert.stric
 t("no child inside → null (falls back to seek)", () => assert.strictEqual(sh("{ab} {c}", { start: at(0, 1), last: at(0, 2) }, "next", 1), null));
 
 // ─── keys ───
-t("all 42 keys, unique", () => {
+t("all 54 keys, unique", () => {
   const k = KEYS.map(x => x[0]);
-  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ac", "ae", "alB", "alM", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "anb", "anc", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ic", "ie", "ilB", "ilM", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "inc", "ine", "inm", "inr", "ir"]);
+  assert.deepStrictEqual(k.sort(), ["aB", "aM", "a^", "a_", "ab", "ac", "ae", "alB", "alM", "al^", "al_", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "an^", "an_", "anb", "anc", "ane", "anm", "anr", "ar",
+    "iB", "iM", "i^", "i_", "ib", "ic", "ie", "ilB", "ilM", "il^", "il_", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "in^", "in_", "inb", "inc", "ine", "inm", "inr", "ir"]);
 });
 t("ic is an argument, ac a command", () => {
   const obj = key => KEYS.find(x => x[0] === key)[1].obj;
   assert.deepStrictEqual(["ic", "inc", "ac", "alc"].map(obj), ["arg", "arg", "command", "command"]);
+});
+t("i^ i_ are sup, sub", () => {
+  const obj = key => KEYS.find(x => x[0] === key)[1].obj;
+  assert.deepStrictEqual(["i^", "a_", "in^", "al_"].map(obj), ["sup", "sub", "sup", "sub"]);
 });
 
 // ─── cursor after a Space l edit: stays on the same character ───
@@ -804,6 +809,22 @@ ta("prompt: Enter while an IME composes is not ours", async () => {
   d.key("input", "Enter", { isComposing: true });
   d.key("input", "Enter");
   assert.strictEqual(await p, "frac");
+});
+
+// ─── scripts, cells, rows, swap (1.2) ───
+const { scriptSpans } = require("./main.js").core;
+const scripts = s => { const l = L(s); return scriptSpans(l).map(x => [x.type, text(l, x.ae, x.bs), text(l, x.a, x.b)]); };
+t("scripts: braced and one token", () => assert.deepStrictEqual(scripts("$x_{n+1}^2$"), [["_", "n+1", "_{n+1}"], ["^", "2", "^2"]]));
+t("scripts: a \\name token, a space before the token", () => assert.deepStrictEqual(scripts("$y^\\alpha_ k$"), [["^", "\\alpha", "^\\alpha"], ["_", "k", "_ k"]]));
+t("scripts: \\ and one character is one token", () => assert.deepStrictEqual(scripts("$x^\\{$"), [["^", "\\{", "^\\{"]]));
+t("scripts: nested, outer first", () => assert.deepStrictEqual(scripts("$e^{x^2}$"), [["^", "x^2", "^{x^2}"], ["^", "2", "^2"]]));
+t("scripts: \\_ and outside maths are not scripts", () => assert.deepStrictEqual(scripts("a_b [^1] $\\_x$"), []));
+t("scripts: no token (maths end, }, unclosed {) is no script", () => assert.deepStrictEqual(scripts("$x^$ $\\a{y_}$ $z^{w$"), []));
+t("scripts: a token over a surrogate pair", () => assert.deepStrictEqual(scripts("$x^𝔸$"), [["^", "𝔸", "^𝔸"]]));
+t("scripts: over a line break in $$", () => assert.deepStrictEqual(scripts("$$\nx^\n2\n$$"), [["^", "2", "^\n2"]]));
+t("SPANS.sup / SPANS.sub split by type", () => {
+  assert.deepStrictEqual(SPANS.sup(L("$x_a^b$")).map(s => s.type), ["^"]);
+  assert.deepStrictEqual(SPANS.sub(L("$x_a^b$")).map(s => s.type), ["_"]);
 });
 
 (async () => {
