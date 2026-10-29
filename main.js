@@ -179,27 +179,32 @@ function skipSpace(lines, p, end) {
   }
   return null;
 }
-// End of the { or [ group opening at p, before `end`, or null when it doesn't close. Braces
-// nest; \x is skipped; a […] ends at a ] outside braces and never takes a } it didn't open.
-function groupEnd(lines, p, end) {
-  const sq = lines[p.line][p.ch] === "[";
-  let depth = 0;
+// Where each { or [ group from p to `end` ends ("line:ch" → position after its closer), in
+// one pass; one that doesn't close is missing. Braces nest; \x is skipped; a […] ends at the
+// first ] at its own brace depth and never takes a } it didn't open.
+function groupEnds(lines, p, end) {
+  const ends = new Map(), braces = [], squares = []; // squares[d]: the open [ at brace depth d
   for (let r = p.line; r <= end.line; r++) {
     const line = lines[r], to = r === end.line ? end.ch : line.length;
     for (let i = r === p.line ? p.ch : 0; i < to; i++) {
       const c = line[i];
       if (c === "\\") { i++; continue; }
-      if (c === "{") depth++;
-      else if (c === "}") { if (--depth < 0) return null; if (!sq && !depth) return at(r, i + 1); }
-      else if (sq && c === "]" && !depth) return at(r, i + 1);
+      if (c === "{") braces.push(r + ":" + i);
+      else if (c === "[") (squares[braces.length] = squares[braces.length] || []).push(r + ":" + i);
+      else if (c === "]") { for (const k of squares[braces.length] || []) ends.set(k, at(r, i + 1)); squares[braces.length] = []; }
+      else if (c === "}") {
+        squares[braces.length] = []; // a [ inside this group never closes now
+        if (braces.length) ends.set(braces.pop(), at(r, i + 1));
+        else squares.length = 0; // an unopened }: nothing before it can close past it
+      }
     }
   }
-  return null;
+  return ends;
 }
 function commandSpans(lines) {
   const out = [];
   for (const m of mathSpans(lines)) {
-    const end = m.bs;
+    const end = m.bs, ends = groupEnds(lines, m.ae, end);
     for (let r = m.ae.line; r <= end.line; r++) {
       const line = lines[r], to = r === end.line ? end.ch : line.length;
       for (let i = r === m.ae.line ? m.ae.ch : 0; i < to; i++) {
@@ -214,7 +219,7 @@ function commandSpans(lines) {
         for (;;) {
           const q = skipSpace(lines, p, end), c = q && lines[q.line][q.ch];
           if (c !== "{" && c !== "[") break;
-          const e = groupEnd(lines, q, end);
+          const e = ends.get(q.line + ":" + q.ch);
           if (!e) break;
           const g = { kind: "arg", opt: c === "[", a: q, ae: at(q.line, q.ch + 1), bs: at(e.line, e.ch - 1), b: e };
           if (g.opt) opts.push(g);
@@ -592,6 +597,14 @@ function delimAt(lines, pos) {
   return null;
 }
 const partner = (lines, pos) => { const d = delimAt(lines, pos); return d && d.there[0]; };
+// The same for a CodeMirror doc, kept for the last doc and position: the highlight, then %
+// (matchKey, then the motion) all ask about the one the cursor is on — one scan between them.
+let delimMemo = null;
+function delimAtDoc(doc, pos) {
+  if (!delimMemo || delimMemo.doc !== doc || cmp(delimMemo.pos, pos)) delimMemo = { doc, pos, d: delimAt(doc.toString().split("\n"), pos) };
+  return delimMemo.d;
+}
+const delimAtCm = (cm, pos) => (cm.cm6 ? delimAtDoc(cm.cm6.state.doc, pos) : delimAt(lineArray(cm), pos));
 // Where % goes: after an operator, both delimiters and what is between (d% takes it all);
 // in visual mode going forward, the partner's last character; else its first.
 function matchTarget(d, op, visual) {
@@ -856,7 +869,7 @@ function latexNamedPrompt(cm, head, args, vim, inputState) {
 }
 // % on one of our delimiters (only matchKey sends it). . replaying d% somewhere else: nothing.
 function latexMatch(cm, head, args, vim, inputState) {
-  const d = delimAt(lineArray(cm), at(head.line, head.ch));
+  const d = delimAtCm(cm, at(head.line, head.ch));
   if (!d) return null;
   return matchTarget(d, !!(inputState && inputState.operator), !!vim.visualMode);
 }
@@ -868,7 +881,7 @@ function matchKey(e, cm) {
   const st = vim.inputState;
   if ((st.prefixRepeat || []).length || (st.motionRepeat || []).length || [].concat(st.keyBuffer || []).length) return false;
   const head = vim.visualMode ? vim.sel.head : cm.getCursor();
-  if (!delimAt(lineArray(cm), at(head.line, head.ch))) return false;
+  if (!delimAtCm(cm, at(head.line, head.ch))) return false;
   e.preventDefault();
   e.stopImmediatePropagation();
   Vim.handleKey(cm, "<LxPct>", "user");
@@ -877,7 +890,7 @@ function matchKey(e, cm) {
 // f F t T hand ; , back to Vim. A keydown, not a wrapped motion: Vim Motions keeps its own
 // reference to moveToCharacter. Note: `rf` / `mf` clear it too — harmless, ; then does f's job.
 function onKeydown(e, cm) {
-  if (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt")) return; // typing a name
+  if (holding || (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt"))) return; // typing a name
   if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; setTimeout(() => (keyAt = null), 0); }
   if (matchKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
@@ -950,7 +963,8 @@ function flashLater(cm, r) {
 // The cursor on \begin{…} \end{…}, \left… \right… or $ / $$ marks it and its partner.
 // Only lines that could hold one get the full scan; big notes are skipped.
 // \begin{name} / \left( count as a whole, so the cursor anywhere on one passes (delimAt decides).
-const DELIM_TOKEN = /\\(?:begin|end)(?:\{[^}]*\})?|\\(?:left|right)\s*(?:([[\]])\s*\\!\s*\\(?:left|right)\s*\1|\\[a-zA-Z]+|\\?.)?/g;
+// (its delimiter is never a \left / \right itself: \left\left( is two tokens, the ( in the second)
+const DELIM_TOKEN = /\\(?:begin|end)(?:\{[^}]*\})?|\\(?:left|right)\s*(?:([[\]])\s*\\!\s*\\(?:left|right)\s*\1|\\(?!(?:left|right)(?![a-zA-Z]))(?:[a-zA-Z]+|.)|[^\\])?/g;
 function mayBeDelim(line, ch) {
   if (line[ch] === "$") return true;
   for (const m of line.matchAll(DELIM_TOKEN)) if (ch >= m.index && ch < m.index + m[0].length) return true;
@@ -961,7 +975,7 @@ function matchDeco(view) {
   if (!CONFIG.highlight || doc.lines > 5000) return CMView.Decoration.none;
   const head = view.state.selection.main.head, line = doc.lineAt(head), ch = head - line.from;
   if (!mayBeDelim(line.text, ch)) return CMView.Decoration.none;
-  const d = delimAt(doc.toString().split("\n"), at(line.number - 1, ch));
+  const d = delimAtDoc(doc, at(line.number - 1, ch));
   if (!d) return CMView.Decoration.none;
   const off = p => doc.line(p.line + 1).from + p.ch, mark = CMView.Decoration.mark({ class: "latex-objects-match" });
   return CMView.Decoration.set([d.here, d.there].map(([p, q]) => mark.range(off(p), off(q))), true);
@@ -1037,13 +1051,26 @@ function commonPrefix(list) {
 const validName = (typed, star = false) => (star ? /^[A-Za-z]+\*?$/ : /^[A-Za-z]+$/).test(unslash(typed.trim()));
 // A one-line input at the cursor. Tab completes to the common start of the names, then
 // cycles them (Shift-Tab back); Enter accepts; Esc, an empty Enter or leaving it → null.
-// Its keys never reach Vim. Opened after the current key is handled (Vim is mid-key now).
+// Its keys never reach Vim. Opened after the current key is handled (Vim is mid-key now);
+// keys typed before it is there are kept and go into it (onKeydown leaves them alone).
+let holding = 0;
 function promptName(view, { placeholder, names, star = false }) {
   return new Promise(done => {
     // the editor's own document: a popout window has its own
     const doc = (view && view.dom && view.dom.ownerDocument) || (typeof document !== "undefined" && document);
     if (!view || !doc) return done(null);
+    const early = [], win = doc.defaultView || doc;
+    const hold = e => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing || !(e.key.length === 1 || ["Enter", "Escape", "Backspace"].includes(e.key))) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      early.push(e.key);
+    };
+    win.addEventListener("keydown", hold, true);
+    holding++;
     setTimeout(() => {
+      win.removeEventListener("keydown", hold, true);
+      holding--;
       const c = view.coordsAtPos(view.state.selection.main.head) || { left: 0, bottom: 0 };
       const input = doc.createElement("input");
       input.className = "latex-objects-prompt";
@@ -1079,6 +1106,11 @@ function promptName(view, { placeholder, names, star = false }) {
       input.addEventListener("blur", () => finish(null));
       doc.body.appendChild(input);
       input.focus();
+      for (const k of early) {
+        if (k === "Enter") return finish(input.value);
+        if (k === "Escape") return finish(null);
+        input.value = k === "Backspace" ? input.value.slice(0, -1) : input.value + k;
+      }
     }, 0);
   });
 }

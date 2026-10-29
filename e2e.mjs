@@ -5,7 +5,7 @@
 //      " lc" Rename command, " lw" Wrap in command (also mapped in visual: vnoremap <leader>lw))
 //      Vim Motions with its defaults: clever-f (set flashcleverf) or a remapped D change what
 //      the f / ; and ]eD cases type, and those cases then fail without any bug here.
-// Uses a scratch note zz-latex-objects-e2e.md (deleted at the end). Prints PASS/FAIL per case.
+// Uses a scratch note zz-latex-objects-e2e.md in a new tab (both gone at the end). Prints PASS/FAIL per case.
 // ONLY=text runs just the cases whose name contains it.
 // Note: port 9222 lets any local process drive Obsidian; relaunch normally when done.
 
@@ -34,11 +34,11 @@ const keys = s => s.match(/<Esc>|<Down>|<CR>|<Tab>|./gu);
 const ed = "app.workspace.activeEditor.editor";
 
 await ev(`(async()=>{const p='zz-latex-objects-e2e.md';const f=app.vault.getAbstractFileByPath(p)||await app.vault.create(p,'');
-  await app.workspace.getLeaf(false).openFile(f);await new Promise(r=>setTimeout(r,500))})()`);
+  window.__latexE2eLeaf=app.workspace.getLeaf('tab');await window.__latexE2eLeaf.openFile(f);await new Promise(r=>setTimeout(r,500))})()`);
 
 let fails = 0;
 const cleanup = async () => {
-  const left = await ev(`(async()=>{const p='zz-latex-objects-e2e.md';const f=app.vault.getAbstractFileByPath(p);if(f)await app.vault.delete(f);return !!app.vault.getAbstractFileByPath(p)})()`);
+  const left = await ev(`(async()=>{const p='zz-latex-objects-e2e.md';window.__latexE2eLeaf?.detach();const f=app.vault.getAbstractFileByPath(p);if(f)await app.vault.delete(f);return !!app.vault.getAbstractFileByPath(p)})()`);
   if (left !== false) { fails++; console.log("FAIL  cleanup: zz-latex-objects-e2e.md was not deleted"); }
 };
 // text, cursor [line, ch], keys, expected doc text (or {sel} for visual selections)
