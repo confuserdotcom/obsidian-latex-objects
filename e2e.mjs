@@ -320,6 +320,20 @@ await t("diw", "foo bar", [0, 0], "diw", " bar");
 await t("ci(", "f(x)", [0, 2], "ci(y<Esc>", "f(y)");
 await t("i then m types m", "ab", [0, 1], "im<Esc>", "amb");
 
+// scripts, cells, rows, swap (1.2)
+await t("di_", "$x_{n+1}$", [0, 4], "di_", "$x_{}$");
+await t("da^ one token", "$x^2 + y$", [0, 2], "da^", "$x + y$");
+await t("din^ next", "$a^b$ $c^d$", [0, 0], "din^", "$a^$ $c^d$");
+await t("ci& in a matrix", "$\\begin{pmatrix} a & b \\end{pmatrix}$", [0, 17], "ci&z<Esc>", "$\\begin{pmatrix} z & b \\end{pmatrix}$");
+await t("da& leaves a clean row", "$\\begin{pmatrix} a & b \\end{pmatrix}$", [0, 17], "da&", "$\\begin{pmatrix} b \\end{pmatrix}$");
+await t("daR on its own line", "$$\n\\begin{align}\nx \\\\\ny\n\\end{align}\n$$", [2, 0], "daR", "$$\n\\begin{align}\ny\n\\end{align}\n$$");
+await t(">, swaps \\frac", "$\\frac{a}{b}$", [0, 7], ">,", "$\\frac{b}{a}$");
+await t("<, then . moves it to the front", "$\\f{a}{b}{c}$", [0, 10], "<,.", "$\\f{c}{a}{b}$");
+await t(">& swaps cells", "$\\begin{matrix} a & b \\end{matrix}$", [0, 16], ">&", "$\\begin{matrix} b & a \\end{matrix}$");
+// the indent is a tab or spaces, per vault: 0dw takes it whatever it is (and the word, if there were none)
+await t(">> still indents", "x", [0, 0], ">>^iy<Esc>0dw", "yx");
+await t("<< still dedents", "\tx", [0, 1], "<<", "x");
+
 // survives Vim Motions reloads
 await ev(`(async()=>{app.commands.executeCommandById("vim-motions:reload-configuration");await new Promise(r=>setTimeout(r,2000))})()`);
 await t("dim after Reload configuration", "a $x$", [0, 0], "dim", "a $$");

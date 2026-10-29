@@ -11,7 +11,7 @@ function rng(seed) { // mulberry32
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 const TOKENS = ["$", "$", "$$", "\\", "\\$", "\\\\", "(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\frac", "\\sqrt", "[n]", "\\alpha ", "\\mathbb", "\\begin{a}", "\\end{a}",
-  "\\begin{b*}", "\\end{b*}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
+  "\\begin{b*}", "\\end{b*}", "^", "_", "&", "&", "\\&", "\\_", "\\begin{pmatrix}", "\\end{pmatrix}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
 function doc(r) {
   let s = "";
   const n = 1 + Math.floor(r() * (r() < 0.1 ? 400 : 40));
@@ -84,6 +84,53 @@ try {
       const nested = (cmp(x.a, y.a) <= 0 && cmp(y.b, x.b) <= 0) || (cmp(y.a, x.a) <= 0 && cmp(x.b, y.b) <= 0);
       assert(disjoint || nested, "crossing commands / arguments");
     }
+    // scripts: ordered positions in the doc; a script is in maths and starts with its ^ / _;
+    // braced: the group's { and } border the argument; token: the argument is the span's end;
+    // no boundary splits a surrogate pair
+    current = `doc ${d} scripts ${JSON.stringify(src)}`;
+    const ordered = s => [s.a, s.ae, s.bs, s.b].every(p => within(lines, p)) && cmp(s.a, s.ae) <= 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) <= 0;
+    for (const s of C.scriptSpans(lines)) {
+      assert(ordered(s) && cmp(s.a, s.ae) < 0, "script out of order");
+      assert(maths.some(m => cmp(m.ae, s.a) <= 0 && cmp(s.b, m.bs) <= 0), "script outside maths");
+      assert.strictEqual(lines[s.a.line][s.a.ch], s.type, "script mark");
+      if (cmp(s.bs, s.b) < 0) {
+        assert.strictEqual(text(lines, at(s.ae.line, s.ae.ch - 1), s.ae), "{", "braced script open");
+        assert.strictEqual(text(lines, s.bs, s.b), "}", "braced script close");
+      } else assert(cmp(s.ae, s.bs) < 0, "token script is empty");
+      for (const p of [s.ae, s.bs, s.b]) {
+        const l = lines[p.line];
+        assert(!(p.ch > 0 && p.ch < l.length && /[\ud800-\udbff]/.test(l[p.ch - 1]) && /[\udc00-\udfff]/.test(l[p.ch])), "script splits a surrogate pair");
+      }
+      stats.spans++;
+    }
+    current = `doc ${d} tables ${JSON.stringify(src)}`;
+    for (const row of C.rowSpans(lines)) {
+      assert(ordered(row), "row out of order");
+      for (const c of row.cells) {
+        assert(ordered(c) && c.row === row, "cell out of order");
+        assert(cmp(row.ae, c.ae) <= 0 && cmp(c.bs, row.bs) <= 0, "cell outside its row");
+      }
+      stats.spans += 1 + row.cells.length;
+    }
+    // a swap trades the two texts and leaves the rest of the note as it was
+    const swapped = (items, k) => apply(lines, [{ from: items[k].ae, to: items[k].bs, text: text(lines, items[k + 1].ae, items[k + 1].bs) },
+      { from: items[k + 1].ae, to: items[k + 1].bs, text: text(lines, items[k].ae, items[k].bs) }]);
+    for (const row of C.rowSpans(lines)) {
+      if (row.cells.length < 2) continue;
+      const got = C.swapAt(lines, row.cells[0].ae, "cell", true);
+      assert.strictEqual(apply(lines, got.changes), swapped(row.cells, 0), "cell swap");
+      stats.edits++;
+    }
+    for (const s of cmds) {
+      const req = s.args.filter(g => !g.opt);
+      if (req.length < 2) continue;
+      // at req[0].ae the cursor may be on a nested command's name or in a nested argument
+      // ({\\x{a}{b}}…, {{x}…}): that one would move
+      if (cmds.some(c => !cmp(c.a, req[0].ae)) || C.argSpans(lines).some(g => !g.opt && g !== req[0] && cmp(g.a, req[0].ae) <= 0 && cmp(req[0].ae, g.b) < 0 && cmp(g.a, req[0].a) > 0)) continue;
+      const got = C.swapAt(lines, req[0].ae, "arg", true);
+      assert.strictEqual(apply(lines, got.changes), swapped(req, 0), "argument swap");
+      stats.edits++;
+    }
     // %: from any delimiter, its partner leads back to it
     current = `doc ${d} partner ${JSON.stringify(src)}`;
     for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {
@@ -96,7 +143,7 @@ try {
       assert.deepStrictEqual([d2.here, d2.there], [d1.there, d1.here], "partner does not lead back");
       stats.picks++;
     }
-    for (const obj of ["math", "env", "paren", "brace", "square"]) {
+    for (const obj of ["math", "env", "paren", "brace", "square", "cell", "row"]) {
       current = `doc ${d} ${obj} ${JSON.stringify(src)}`;
       const spans = C.SPANS[obj](lines);
       stats.spans += spans.length;
@@ -104,6 +151,10 @@ try {
       // structure: ordered positions inside the doc, delimiters are what they claim to be
       for (const s of spans) {
         for (const p of [s.a, s.ae, s.bs, s.b]) assert(within(lines, p), "position outside the doc");
+        if (obj === "cell" || obj === "row") { // no delimiters: [a, b) is the text and what follows it
+          assert(cmp(s.a, s.ae) <= 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) <= 0, "span out of order");
+          continue;
+        }
         assert(cmp(s.a, s.ae) < 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) < 0, "span out of order");
         const open = text(lines, s.a, s.ae), close = text(lines, s.bs, s.b);
         if (obj === "math") {
@@ -167,7 +218,8 @@ try {
       }
 
       // 3inB / 3ilB: brute force — hop count times to the closest span past the one counted
-      // (starting at / ending before its edge, so nested ones are skipped); count 1 = pick
+      // (starting at / ending before its edge, so nested ones are skipped; an empty cell is
+      // counted once); count 1 = pick
       for (let l = 0; l < lines.length; l++) for (let ch = 0; ch <= lines[l].length; ch += 3) {
         const pos = at(l, ch);
         for (const which of ["next", "last"]) for (let count = 1; count <= 3; count++) {
@@ -175,7 +227,7 @@ try {
           const fwd = which === "next", near = s => (fwd ? s.a.line - pos.line : pos.line - s.b.line) <= C.CONFIG.seekLines;
           let ref = null;
           for (let k = 0; k < count; k++) {
-            const ok = spans.filter(s => near(s) && (fwd ? cmp(s.a, pos) > 0 && (!ref || cmp(s.a, ref.b) >= 0) : cmp(pos, s.b) >= 0 && (!ref || cmp(s.b, ref.a) <= 0)));
+            const ok = spans.filter(s => near(s) && s !== ref && (fwd ? cmp(s.a, pos) > 0 && (!ref || cmp(s.a, ref.b) >= 0) : cmp(pos, s.b) >= 0 && (!ref || cmp(s.b, ref.a) <= 0)));
             ref = ok.reduce((m, s) => (!m || (fwd ? cmp(s.a, m.a) < 0 : cmp(s.b, m.b) > 0) ? s : m), null);
             if (!ref) break;
           }

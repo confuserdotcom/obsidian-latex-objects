@@ -487,13 +487,18 @@ t("vaB then anB: the child around, not the selection itself", () => assert.stric
 t("no child inside → null (falls back to seek)", () => assert.strictEqual(sh("{ab} {c}", { start: at(0, 1), last: at(0, 2) }, "next", 1), null));
 
 // ─── keys ───
-t("all 42 keys, unique", () => {
+t("all 66 keys, unique", () => {
   const k = KEYS.map(x => x[0]);
-  assert.deepStrictEqual(k.sort(), ["aB", "aM", "ab", "ac", "ae", "alB", "alM", "alb", "alc", "ale", "alm", "alr", "am", "anB", "anM", "anb", "anc", "ane", "anm", "anr", "ar", "iB", "iM", "ib", "ic", "ie", "ilB", "ilM", "ilb", "ilc", "ile", "ilm", "ilr", "im", "inB", "inM", "inb", "inc", "ine", "inm", "inr", "ir"]);
+  assert.deepStrictEqual(k.sort(), ["a&", "aB", "aM", "aR", "a^", "a_", "ab", "ac", "ae", "al&", "alB", "alM", "alR", "al^", "al_", "alb", "alc", "ale", "alm", "alr", "am", "an&", "anB", "anM", "anR", "an^", "an_", "anb", "anc", "ane", "anm", "anr", "ar",
+    "i&", "iB", "iM", "iR", "i^", "i_", "ib", "ic", "ie", "il&", "ilB", "ilM", "ilR", "il^", "il_", "ilb", "ilc", "ile", "ilm", "ilr", "im", "in&", "inB", "inM", "inR", "in^", "in_", "inb", "inc", "ine", "inm", "inr", "ir"]);
 });
 t("ic is an argument, ac a command", () => {
   const obj = key => KEYS.find(x => x[0] === key)[1].obj;
   assert.deepStrictEqual(["ic", "inc", "ac", "alc"].map(obj), ["arg", "arg", "command", "command"]);
+});
+t("i^ i_ i& iR are sup, sub, cell, row", () => {
+  const obj = key => KEYS.find(x => x[0] === key)[1].obj;
+  assert.deepStrictEqual(["i^", "a_", "in&", "alR"].map(obj), ["sup", "sub", "cell", "row"]);
 });
 
 // ─── cursor after a Space l edit: stays on the same character ───
@@ -804,6 +809,137 @@ ta("prompt: Enter while an IME composes is not ours", async () => {
   d.key("input", "Enter", { isComposing: true });
   d.key("input", "Enter");
   assert.strictEqual(await p, "frac");
+});
+
+// ─── scripts, cells, rows, swap (1.2) ───
+const { scriptSpans } = require("./main.js").core;
+const scripts = s => { const l = L(s); return scriptSpans(l).map(x => [x.type, text(l, x.ae, x.bs), text(l, x.a, x.b)]); };
+t("scripts: braced and one token", () => assert.deepStrictEqual(scripts("$x_{n+1}^2$"), [["_", "n+1", "_{n+1}"], ["^", "2", "^2"]]));
+t("scripts: a \\name token, a space before the token", () => assert.deepStrictEqual(scripts("$y^\\alpha_ k$"), [["^", "\\alpha", "^\\alpha"], ["_", "k", "_ k"]]));
+t("scripts: \\ and one character is one token", () => assert.deepStrictEqual(scripts("$x^\\{$"), [["^", "\\{", "^\\{"]]));
+t("scripts: nested, outer first", () => assert.deepStrictEqual(scripts("$e^{x^2}$"), [["^", "x^2", "^{x^2}"], ["^", "2", "^2"]]));
+t("scripts: \\_ and outside maths are not scripts", () => assert.deepStrictEqual(scripts("a_b [^1] $\\_x$"), []));
+t("scripts: no token (maths end, }, unclosed {) is no script", () => assert.deepStrictEqual(scripts("$x^$ $\\a{y_}$ $z^{w$"), []));
+t("scripts: a token over a surrogate pair", () => assert.deepStrictEqual(scripts("$x^𝔸$"), [["^", "𝔸", "^𝔸"]]));
+t("scripts: over a line break in $$", () => assert.deepStrictEqual(scripts("$$\nx^\n2\n$$"), [["^", "2", "^\n2"]]));
+t("scripts: \\^ is not a script, \\\\^2 is (a line break first)", () => {
+  assert.deepStrictEqual(scripts("$a\\^2$"), []);
+  assert.deepStrictEqual(scripts("$a\\\\^2$"), [["^", "2", "^2"]]);
+});
+t("scripts: a second mark right after has no script", () => {
+  assert.deepStrictEqual(scripts("$x^^2$"), [["^", "2", "^2"]]);
+  assert.deepStrictEqual(scripts("$x^&2$"), []);
+});
+t("scripts: a callout prefix before the token on the next line", () => assert.deepStrictEqual(scripts("> $$\n> x^\n> 2\n> $$"), [["^", "2", "^\n> 2"]]));
+t("scripts: \\ and an astral character is one token", () => assert.deepStrictEqual(scripts("$x^\\😀$"), [["^", "\\😀", "^\\😀"]]));
+t("scripts: a braced group over lines in $$", () => assert.deepStrictEqual(scripts("$$\nx^{a\nb}\n$$"), [["^", "a\nb", "^{a\nb}"]]));
+t("SPANS.sup / SPANS.sub split by type", () => {
+  assert.deepStrictEqual(SPANS.sup(L("$x_a^b$")).map(s => s.type), ["^"]);
+  assert.deepStrictEqual(SPANS.sub(L("$x_a^b$")).map(s => s.type), ["_"]);
+});
+const { rowSpans, cellSpans } = require("./main.js").core;
+const table = s => { const l = L(s); return rowSpans(l).map(r => [text(l, r.ae, r.bs), text(l, r.ao || r.a, r.b), r.cells.map(c => [text(l, c.ae, c.bs), text(l, c.ao || c.a, c.b)])]); };
+t("rows / cells: one line", () => assert.deepStrictEqual(table("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}"), [
+  ["a & b", "a & b \\\\", [["a", "a & "], ["b", " & b"]]],
+  ["c & d", " \\\\ c & d", [["c", "c & "], ["d", " & d"]]]]));
+t("rows: own lines, a trailing \\\\ makes no empty row", () => assert.deepStrictEqual(table("$$\n\\begin{align}\nx &= 1 \\\\\ny &= 2 \\\\\n\\end{align}\n$$").map(r => r.slice(0, 2)),
+  [["x &= 1", "x &= 1 \\\\"], ["y &= 2", "y &= 2 \\\\"]]));
+t("rows: \\\\[2pt] is one separator", () => assert.deepStrictEqual(table("\\begin{align}a \\\\[2pt] b\\end{align}").map(r => r.slice(0, 2)), [["a", "a \\\\[2pt]"], ["b", " \\\\[2pt] b"]]));
+t("cells: & in braces, in a nested env and \\& are not separators", () => {
+  const rows = table("\\begin{pmatrix} {a & b} & \\begin{cases} x & y \\end{cases} & c \\& d \\end{pmatrix}");
+  assert.deepStrictEqual(rows.find(r => r[0].startsWith("{a")).at(2).map(c => c[0]), ["{a & b}", "\\begin{cases} x & y \\end{cases}", "c \\& d"]);
+  assert.deepStrictEqual(rows.find(r => r[0] === "x & y").at(2).map(c => c[0]), ["x", "y"]);
+});
+t("cells: an empty cell is empty at its place", () => {
+  const l = L("\\begin{matrix}a & & b\\end{matrix}"), c = cellSpans(l)[1];
+  assert.deepStrictEqual([c.ae, c.bs], [at(0, 17), at(0, 17)]);
+});
+t("cells: one-cell row: a& is just the cell", () => assert.deepStrictEqual(table("\\begin{align}a \\\\ b\\end{align}")[0][2], [["a", "a"]]));
+t("cells: array's column spec is not a cell", () => assert.deepStrictEqual(table("\\begin{array}{cc} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]));
+t("tables: an environment without & or \\\\ has no rows", () => assert.deepStrictEqual(table("\\begin{equation} x \\end{equation}"), []));
+t("tables: callout prefixes are not cell text", () => assert.deepStrictEqual(table("> $$\n> \\begin{matrix}\n> a & b\n> \\end{matrix}\n> $$")[0][0], "a & b"));
+t("cells: an optional [..] before the column spec is not a cell", () => {
+  assert.deepStrictEqual(table("\\begin{array}[t]{cc} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]);
+  assert.deepStrictEqual(table("\\begin{tabular}[t]{cc} a & b \\end{tabular}")[0][2].map(c => c[0]), ["a", "b"]);
+});
+t("rows: aR on the last row takes the previous row's end through its \\\\", () => {
+  const l = L("\\begin{align} a \\\\ b \\end{align}"), r = rowSpans(l)[1];
+  assert.deepStrictEqual(range(r, l, false), { start: at(0, 15), end: at(0, 20) });
+});
+t("cells: a multi-line cell", () => assert.deepStrictEqual(table("\\begin{matrix} a\nb & c \\end{matrix}")[0][2], [["a\nb", "a\nb & "], ["c", " & c"]]));
+t("rows: a blank middle row", () => assert.deepStrictEqual(table("\\begin{align} a \\\\ \\\\ b \\end{align}").map(r => r.slice(0, 2)), [["a", "a \\\\"], ["", " \\\\"], ["b", " \\\\ b"]]));
+t("cells: next / last pick the neighbouring cell", () => {
+  const l = L("\\begin{matrix} a & b & c \\end{matrix}"), nx = countPick(SPANS.cell(l), l, at(0, 16), "next", true, 1), ls = countPick(SPANS.cell(l), l, at(0, 20), "last", true, 1);
+  assert.strictEqual(text(l, nx.start, nx.end), "b");
+  assert.strictEqual(text(l, ls.start, ls.end), "a");
+});
+t("cells: a count of 2 from a nested matrix reaches the outer cell", () => {
+  const l = L("\\begin{matrix} a & \\begin{matrix} x & y \\end{matrix} \\end{matrix}"), r = countPick(SPANS.cell(l), l, at(0, l[0].indexOf(" x ") + 1), "cur", true, 2);
+  assert.strictEqual(text(l, r.start, r.end), "\\begin{matrix} x & y \\end{matrix}");
+});
+t("range: aR on a row alone on its line is linewise", () => {
+  const l = L("\\begin{align}\nx \\\\\ny\n\\end{align}"), [r0, r1] = rowSpans(l);
+  assert.deepStrictEqual(range(r0, l, false), { start: at(1, 0), end: at(1, 4), linewise: true });
+  assert.deepStrictEqual(range(r1, l, false), { start: at(1, 1), end: at(2, 1) });
+});
+const { swapAt } = require("./main.js").core;
+const swap = (s, pos, what, fwd, n) => { const l = L(s), r = swapAt(l, pos, what, fwd, n); return r.none || [apply(l, r.changes), [r.cursor.line, r.cursor.ch]]; };
+t("swap: >, swaps \\frac's arguments, the cursor goes along", () => assert.deepStrictEqual(swap("$\\frac{a}{bb}$", at(0, 7), "arg", true), ["$\\frac{bb}{a}$", [0, 11]]));
+t("swap: <, from the second argument", () => assert.deepStrictEqual(swap("$\\frac{a}{bb}$", at(0, 11), "arg", false), ["$\\frac{bb}{a}$", [0, 8]]));
+t("swap: on the name, the first argument moves", () => assert.deepStrictEqual(swap("$\\frac{a}{b}$", at(0, 2), "arg", true)[0], "$\\frac{b}{a}$"));
+t("swap: optional arguments stay", () => assert.deepStrictEqual(swap("$\\x[o]{a}[p]{b}$", at(0, 8), "arg", true)[0], "$\\x[o]{b}[p]{a}$"));
+t("swap: nested commands move with their argument", () => assert.deepStrictEqual(swap("$\\frac{\\sqrt{x}}{y}$", at(0, 15), "arg", true)[0], "$\\frac{y}{\\sqrt{x}}$"));
+t("swap: the innermost argument around the cursor", () => assert.deepStrictEqual(swap("$\\frac{\\b{x}{z}}{y}$", at(0, 11), "arg", true)[0], "$\\frac{\\b{z}{x}}{y}$"));
+t("swap: a count moves it that many places", () => assert.deepStrictEqual(swap("$\\f{a}{b}{c}$", at(0, 4), "arg", true, 2), ["$\\f{b}{c}{a}$", [0, 10]]));
+t("swap: over lines, the cursor keeps its place in the text", () => assert.deepStrictEqual(swap("$$\n\\frac{a\nb}{c}\n$$", at(2, 0), "arg", true), ["$$\n\\frac{c}{a\nb}\n$$", [2, 0]]));
+t("swap: nothing to swap with", () => {
+  assert.strictEqual(swap("$\\frac{a}{b}$", at(0, 10), "arg", true), "No next argument");
+  assert.strictEqual(swap("$\\frac{a}{b}$", at(0, 7), "arg", true, 2), "No next argument");
+  assert.strictEqual(swap("$\\sqrt[n]{x}$", at(0, 7), "arg", false), "Not in a { } argument");
+  assert.strictEqual(swap("$x$", at(0, 1), "arg", true), "Not in a { } argument");
+});
+t("swap: >& <& swap cells, gaps stay", () => {
+  assert.deepStrictEqual(swap("\\begin{matrix}a & bb \\\\ c\\end{matrix}", at(0, 14), "cell", true), ["\\begin{matrix}bb & a \\\\ c\\end{matrix}", [0, 19]]);
+  assert.deepStrictEqual(swap("\\begin{matrix}a & bb\\end{matrix}", at(0, 18), "cell", false)[0], "\\begin{matrix}bb & a\\end{matrix}");
+  assert.strictEqual(swap("\\begin{matrix}a \\\\ b\\end{matrix}", at(0, 14), "cell", true), "No next cell");
+  assert.strictEqual(swap("$x$", at(0, 1), "cell", true), "Not in a cell");
+});
+// the gap and the separator after an item belong to it, not to the last one
+const curText = (s, ch, obj, inner = true) => { const l = L(s), r = countPick(SPANS[obj](l), l, at(0, ch), "cur", inner, 1); return r && text(l, r.start, r.end); };
+t("cells: the cursor on the gap or the & is in the cell before", () => {
+  const m = "\\begin{matrix} a & b \\end{matrix}";
+  assert.strictEqual(curText(m, m.indexOf("a ") + 1, "cell"), "a");
+  assert.strictEqual(curText(m, m.indexOf("&"), "cell"), "a");
+  assert.strictEqual(curText(m, m.indexOf(" b ") + 1, "cell"), "b");
+  assert.strictEqual(curText(m, m.indexOf(" b ") + 1, "cell", false), " & b");
+  assert.strictEqual(swap(m, at(0, m.indexOf("&")), "cell", true)[0], "\\begin{matrix} b & a \\end{matrix}");
+});
+t("rows: the cursor on a \\\\ is in the row before", () => {
+  const m = "\\begin{align} x \\\\ y \\\\ z \\end{align}", yEnd = m.indexOf("y") + 2;
+  assert.strictEqual(curText(m, yEnd, "row"), "y");
+  assert.strictEqual(curText(m, yEnd, "row", false), "y \\\\");
+  assert.strictEqual(curText(m, m.indexOf("z"), "row", false), " \\\\ z");
+});
+t("cells / rows: counts reach the last one", () => {
+  const m = "\\begin{matrix} a & b & c \\end{matrix}", end = m.indexOf("\\end");
+  const cnt = (s, ch, obj, which, n) => { const l = L(s), r = countPick(SPANS[obj](l), l, at(0, ch), which, true, n); return r && text(l, r.start, r.end); };
+  assert.strictEqual(cnt(m, 0, "cell", "next", 3), "c");
+  assert.strictEqual(cnt(m, 0, "cell", "next", 2), "b");
+  assert.strictEqual(cnt(m, end, "cell", "last", 2), "b");
+  assert.strictEqual(cnt("\\begin{matrix} a & b \\end{matrix}", 0, "cell", "next", 2), "b");
+  const r = "\\begin{align} x \\\\ y \\\\ z \\end{align}", rEnd = r.indexOf("\\end");
+  assert.strictEqual(cnt(r, 0, "row", "next", 3), "z");
+  assert.strictEqual(cnt(r, rEnd, "row", "last", 2), "y");
+});
+t("cells: a column spec with nested braces is not a cell", () => {
+  assert.deepStrictEqual(table("\\begin{array}{@{}cc@{}} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]);
+  assert.deepStrictEqual(table("\\begin{array}[t]{*{2}{c}} a & b \\end{array}")[0][2].map(c => c[0]), ["a", "b"]);
+});
+t("swap: <& with a count, and an empty cell", () => {
+  assert.deepStrictEqual(swap("\\begin{matrix}a & b & c\\end{matrix}", at(0, 22), "cell", false, 2)[0], "\\begin{matrix}c & a & b\\end{matrix}");
+  // an empty cell: the contents trade places (the spacing around them may not be even)
+  const out = swap("\\begin{matrix}a & & b\\end{matrix}", at(0, 14), "cell", true)[0];
+  assert.deepStrictEqual(table(out)[0][2].map(c => c[0]), ["", "a", "b"]);
 });
 
 (async () => {

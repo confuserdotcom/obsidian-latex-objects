@@ -237,6 +237,152 @@ function commandSpans(lines) {
   return out;
 }
 const argSpans = lines => commandSpans(lines).flatMap(s => s.args);
+// x_{n+1}, x^2, x^\alpha in maths: the _ / ^ and its group, or its one token (a character,
+// \name, or \ and a character). As spans { kind: "script", type: "^" | "_", a, ae, bs, b }.
+function scriptSpans(lines) {
+  const out = [];
+  for (const m of mathSpans(lines)) {
+    const end = m.bs, ends = groupEnds(lines, m.ae, end);
+    for (let r = m.ae.line; r <= end.line; r++) {
+      const line = lines[r], to = r === end.line ? end.ch : line.length;
+      for (let i = r === m.ae.line ? m.ae.ch : 0; i < to; i++) {
+        const c = line[i];
+        if (c === "\\") { i++; continue; }
+        if (c !== "^" && c !== "_") continue;
+        const q = skipSpace(lines, at(r, i + 1), end);
+        if (!q) continue;
+        const t = lines[q.line], k = t[q.ch], qto = q.line === end.line ? end.ch : t.length;
+        if ("}^_&".includes(k)) continue; // a } ^ _ & right after is not a script argument
+        let ae = q, bs, b;
+        if (k === "{") {
+          const e = ends.get(q.line + ":" + q.ch);
+          if (!e) continue;
+          ae = at(q.line, q.ch + 1); bs = at(e.line, e.ch - 1); b = e;
+        } else {
+          let n = 1; // the token's length in UTF-16 units: \name, \ and one character, a character
+          if (k === "\\") {
+            const name = /^[A-Za-z]+/.exec(t.slice(q.ch + 1, qto));
+            n = name ? 1 + name[0].length : 1 + (isHigh(t, q.ch + 1) ? 2 : 1);
+          } else if (isHigh(t, q.ch)) n = 2;
+          bs = b = at(q.line, Math.min(q.ch + n, qto));
+        }
+        out.push({ kind: "script", type: c, a: at(r, i), ae, bs, b });
+      }
+    }
+  }
+  return out;
+}
+// [p, q) without the whitespace around it (line breaks and "> " prefixes too); blank → empty at p.
+function trimmed(lines, p, q) {
+  const s = skipSpace(lines, p, q);
+  if (!s) return [p, p];
+  let e = q;
+  for (;;) {
+    const line = lines[e.line], pre = e.line > s.line ? prefixOf(line).length : 0;
+    if (e.ch > pre && /\s/.test(line[e.ch - 1])) e = at(e.line, e.ch - 1);
+    else if (e.ch <= pre && e.line > s.line) e = at(e.line - 1, lines[e.line - 1].length);
+    else return [s, e];
+  }
+}
+
+// The rows and cells of every environment that has a & or \\ of its own: not in { }, not in a
+// nested environment, not \&. A \\ takes its [2pt]. Rows: { kind: "row", a, ae, bs, b, cells };
+// cells: { kind: "cell", a, ae, bs, b, row }. [ae, bs) is the trimmed text; [a, b) is what a&
+// / aR take: a cell up to the next cell's text, a row with its \\. The last one has no
+// separator after it, so a& / aR take from the previous one's text instead (through its & /
+// \\): that start is `ao`, kept apart so the cursor on that separator stays in the one before.
+function tableSpans(lines) {
+  const envs = envSpans(lines), rows = [];
+  const startAt = new Map(envs.map(n => [n.a.line + ":" + n.a.ch, n]));
+  for (const env of envs) {
+    const arg = argOf(lines, env), from = arg ? at(env.ae.line, env.ae.ch + arg[0].length) : env.ae;
+    const marks = []; // { amp, p, e }
+    let depth = 0, r = from.line, i = from.ch;
+    while (cmp(at(r, i), env.bs) < 0) {
+      const line = lines[r];
+      if (i >= line.length) { r++; i = 0; continue; }
+      const n = startAt.get(r + ":" + i);
+      if (n && cmp(n.a, env.ae) >= 0 && cmp(n.b, env.bs) <= 0) { r = n.b.line; i = n.b.ch; continue; }
+      const c = line[i];
+      if (c === "{") depth++;
+      else if (c === "}") depth = Math.max(0, depth - 1);
+      else if (c === "&" && !depth) marks.push({ amp: true, p: at(r, i), e: at(r, i + 1) });
+      else if (c === "\\") {
+        if (line[i + 1] === "\\" && !depth) {
+          const o = /^\[[^\]]*\]/.exec(line.slice(i + 2)), e = at(r, i + 2 + (o ? o[0].length : 0));
+          marks.push({ amp: false, p: at(r, i), e });
+          r = e.line; i = e.ch; continue;
+        }
+        i += 2; continue;
+      }
+      i++;
+    }
+    if (!marks.length) continue;
+    // split into rows at \\, each into cells at &
+    const segs = [];
+    let start = from, cells = [];
+    for (const k of [...marks, { amp: false, p: env.bs, e: env.bs, last: true }]) {
+      cells.push([start, k.p]);
+      if (k.amp) { start = k.e; continue; }
+      segs.push({ cells, sep: k.last ? null : k });
+      cells = []; start = k.e;
+    }
+    const envRows = [];
+    for (const g of segs) {
+      const [ae, bs] = trimmed(lines, g.cells[0][0], g.cells[g.cells.length - 1][1]);
+      if (!g.sep && !cmp(ae, bs) && envRows.length) continue; // nothing after the last \\
+      const row = { kind: "row", a: ae, ae, bs, b: g.sep ? g.sep.e : bs, cells: [], noSep: !g.sep };
+      // a blank cell sits at its place, kept inside the row's text (a blank first cell: at the first &)
+      const clamp = p => (cmp(p, ae) < 0 ? ae : cmp(p, bs) > 0 ? bs : p);
+      row.cells = g.cells.map(([p, q]) => { const [cae, cbs] = trimmed(lines, p, q).map(clamp); return { kind: "cell", a: cae, ae: cae, bs: cbs, b: cbs, row }; });
+      row.cells.forEach((c, k, cs) => { if (k + 1 < cs.length) c.b = cs[k + 1].ae; else if (k) c.ao = cs[k - 1].bs; });
+      envRows.push(row);
+    }
+    const lastRow = envRows[envRows.length - 1], prev = envRows[envRows.length - 2];
+    if (prev && lastRow.noSep) lastRow.ao = prev.bs;
+    rows.push(...envRows);
+  }
+  return rows;
+}
+const rowSpans = lines => tableSpans(lines);
+const cellSpans = lines => tableSpans(lines).flatMap(r => r.cells);
+// Position after typing `str` at p.
+function advance(p, str) {
+  const parts = str.split("\n");
+  return parts.length === 1 ? at(p.line, p.ch + str.length) : at(p.line + parts.length - 1, parts[parts.length - 1].length);
+}
+// Move items[from] to index `to` among its siblings (each { ae, bs }, in order), the others
+// shifting over: one change from the first to the last touched. The cursor keeps its place in
+// the moved text. → { changes, cursor }
+function moveChanges(lines, items, from, to, pos) {
+  const lo = Math.min(from, to), hi = Math.max(from, to), run = items.slice(lo, hi + 1);
+  const texts = run.map(s => slice(lines, s.ae, s.bs)), gaps = run.slice(1).map((s, k) => slice(lines, run[k].bs, s.ae));
+  const [moved] = texts.splice(from - lo, 1);
+  texts.splice(to - lo, 0, moved);
+  let text = "", start = null;
+  texts.forEach((t, k) => { if (k === to - lo) start = advance(items[lo].ae, text); text += t + (k < gaps.length ? gaps[k] : ""); });
+  const m = items[from], inside = cmp(pos, m.ae) >= 0 && cmp(pos, m.bs) <= 0;
+  return { changes: [{ from: items[lo].ae, to: items[hi].bs, text }], cursor: inside ? advance(start, slice(lines, m.ae, pos)) : start };
+}
+// >, <, >& <&: the {…} argument (what "arg") or cell (what "cell") at pos, moved count places
+// forward / back among its command's {…} arguments / its row's cells. → { changes, cursor } or
+// { none: message }.
+function swapAt(lines, pos, what, forward, count = 1) {
+  let items, s;
+  if (what === "arg") {
+    const cmd = commandSpans(lines).find(c => c.args.length && cmp(c.a, pos) <= 0 && cmp(pos, c.ae) < 0);
+    s = cmd ? cmd.args.find(g => !g.opt) : around(argSpans(lines).filter(g => !g.opt), pos);
+    if (!s) return { none: "Not in a { } argument" };
+    items = s.cmd.args.filter(g => !g.opt);
+  } else {
+    s = around(cellSpans(lines), pos);
+    if (!s) return { none: "Not in a cell" };
+    items = s.row.cells;
+  }
+  const from = items.indexOf(s), to = from + (forward ? count : -count);
+  if (to < 0 || to >= items.length) return { none: `No ${forward ? "next" : "previous"} ${what === "arg" ? "argument" : "cell"}` };
+  return moveChanges(lines, items, from, to, pos);
+}
 const namedSpans = (lines, name) => commandSpans(lines).filter(s => s.name === name);
 // For the prompt's Tab: the names in the note's maths, most used first.
 function commandNames(lines) {
@@ -246,7 +392,8 @@ function commandNames(lines) {
 }
 const ofType = t => lines => bracketSpans(lines).filter(s => s.type === t);
 const SPANS = { math: mathSpans, display: l => mathSpans(l).filter(s => s.kind === "display"), env: envSpans, paren: ofType("("), brace: ofType("{"), square: ofType("["),
-  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans };
+  command: l => commandSpans(l).filter(s => s.args.length), arg: argSpans,
+  sup: l => scriptSpans(l).filter(s => s.type === "^"), sub: l => scriptSpans(l).filter(s => s.type === "_"), cell: l => cellSpans(l), row: l => rowSpans(l) };
 // What a ]x / ; walks: an object's spans, or (]C / [C) the commands called `name`.
 const spansFor = (obj, lines, name) => (obj === "named" ? namedSpans(lines, name) : SPANS[obj](lines));
 
@@ -349,7 +496,9 @@ function range(s, lines, inner) {
   const blankAfter = p => !lines[p.line].slice(p.ch).trim();
   const eol = l => at(l, lines[l].length);
   if (!inner) {
-    if (s.a.line < s.b.line && blankBefore(s.a) && blankAfter(s.b)) return { start: at(s.a.line, 0), end: eol(s.b.line), linewise: true };
+    if (s.ao) s = { ...s, a: s.ao };
+    // a row alone on its line(s) with its \\ too: aR is like dd
+    if ((s.a.line < s.b.line || s.kind === "row") && blankBefore(s.a) && blankAfter(s.b)) return { start: at(s.a.line, 0), end: eol(s.b.line), linewise: true };
     return { start: s.a, end: s.b };
   }
   let start = s.ae, end = s.bs;
@@ -405,7 +554,14 @@ function unwrapChanges(lines, s, extraRows = []) {
 // ─── align-type environments ──────────────────────────────────────────────────
 const ALIGNED = /^(align|flalign|eqnarray|split)/;    // & columns, \\ rows
 const ARG_ENV = /^(alignat|alignedat|array|tabular)/; // \begin{…}{arg}
-const argOf = (lines, s) => (ARG_ENV.test(s.name) && /^\{[^}]*\}/.exec(lines[s.ae.line].slice(s.ae.ch))) || null;
+// The {arg} after \begin{…} (with a [t] before it), braces nested: [text] or null.
+function argOf(lines, s) {
+  if (!ARG_ENV.test(s.name)) return null;
+  const line = lines[s.ae.line], o = /^\[[^\]]*\]/.exec(line.slice(s.ae.ch)), i = s.ae.ch + (o ? o[0].length : 0);
+  if (line[i] !== "{") return null;
+  const e = groupEnds(lines, at(s.ae.line, i), at(s.ae.line, line.length)).get(s.ae.line + ":" + i);
+  return e ? [line.slice(s.ae.ch, e.ch)] : null;
+}
 
 // The alignment marks inside s: top-level runs of & (and \\ when `rows`), spaces between
 // them included, as {r, i, j}. Not \&, not the marks of a nested matrix / cases.
@@ -737,16 +893,20 @@ function grow(spans, lines, sel, inner) {
 // ─── Vim wiring ────────────────────────────────────────────────────────────────
 const KEYS = [];
 // c is two span lists under one key: ic = one argument, ac = the whole command
-for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null]])
+for (const [ch, obj] of [["m", "math"], ["M", "display"], ["e", "env"], ["b", "paren"], ["B", "brace"], ["r", "square"], ["c", null],
+  ["^", "sup"], ["_", "sub"], ["&", "cell"], ["R", "row"]])
   for (const [mid, which] of [["", "cur"], ["n", "next"], ["l", "last"]])
     for (const inner of [true, false]) KEYS.push([(inner ? "i" : "a") + mid + ch, { obj: obj || (inner ? "arg" : "command"), which, inner }]);
-const OBJ_KEYS = "mMebBrc";
+const OBJ_KEYS = "mMebBrc^_&R";
 // the private keys stockKey sends: <LxO-inm> … for the n / l objects, <LxRep-f/b> for ; ,
 const ALIASES = KEYS.filter(([k]) => k.length === 3).map(([k, args]) => [`<LxO-${k}>`, args]);
 const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: false }]];
 // ]C [C ask for a name; once it is typed, <LxGo> makes the move (as a ; would)
 const NAMED = [["]C", { forward: true }], ["[C", { forward: false }]], GO = [["<LxGo>", { forward: true }]];
 const MATCH = [["<LxPct>", {}]]; // the private key matchKey sends for % on our delimiters
+// >, <, >& <&: the private keys swapKey sends, mapped to the swap action
+const SWAPS = [["<LxSwap-a>", { what: "arg", forward: true }], ["<LxSwap-A>", { what: "arg", forward: false }],
+  ["<LxSwap-c>", { what: "cell", forward: true }], ["<LxSwap-C>", { what: "cell", forward: false }]];
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
@@ -755,7 +915,8 @@ const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", for
   ["]c", { obj: "command", forward: true }], ["[c", { obj: "command", forward: false }],
   ["]a", { obj: "arg", forward: true }], ["[a", { obj: "arg", forward: false }]];
 
-const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor" };
+const NONE = { math: "No $…$ or $$…$$ near the cursor", display: "No $$…$$ near the cursor", env: "No \\begin{…} near the cursor", paren: "No ( ) near the cursor", brace: "No { } near the cursor", square: "No [ ] near the cursor", command: "No command near the cursor", arg: "No argument near the cursor",
+  sup: "No ^ near the cursor", sub: "No _ near the cursor", cell: "Not in a cell: no \\begin{…} with & near the cursor", row: "Not in a row: no \\begin{…} with \\\\ or & near the cursor" };
 const lineArray = cm => cm.getValue().split("\n");
 
 // The CM Vim adapter of an Obsidian editor. Vim Motions keeps it private (not on view.cm),
@@ -894,11 +1055,33 @@ function matchKey(e, cm) {
 function onKeydown(e, cm) {
   if (holding || (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt"))) return; // typing a name
   if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; window.setTimeout(() => (keyAt = null), 0); }
-  if (matchKey(e, cm) || stockKey(e, cm)) return;
+  if (matchKey(e, cm) || swapKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
 }
 
+// >, <, >& <&: Vim reads > / < as the indent operator before the , or & comes (a full match
+// wins over a longer one), so a , or & right after it is caught here: the operator is dropped
+// and the count and one private key go to Vim, mapped to the swap action (so `.` repeats it).
+function swapKey(e, cm) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
+  if ((e.key !== "," && e.key !== "&") || !Vim || !vim || vim.insertMode || vim.visualMode || e.ctrlKey || e.metaKey || e.altKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
+  const st = vim.inputState;
+  if (!st || st.operator !== "indent" || [].concat(st.keyBuffer || []).length) return false;
+  const count = st.getRepeat ? st.getRepeat() : 0, fwd = !!(st.operatorArgs && st.operatorArgs.indentRight);
+  e.preventDefault(); e.stopImmediatePropagation();
+  Vim.handleKey(cm, "<Esc>", "user");
+  for (const d of count > 1 ? String(count) : "") Vim.handleKey(cm, d, "user");
+  Vim.handleKey(cm, `<LxSwap-${e.key === "," ? (fwd ? "a" : "A") : fwd ? "c" : "C"}>`, "user");
+  return true;
+}
+function latexSwap(cm, args) {
+  const cur = cm.getCursor(), r = swapAt(lineArray(cm), at(cur.line, cur.ch), args.what, args.forward, args.repeat || 1);
+  if (r.none) { new Notice(r.none); return; }
+  const [c] = r.changes;
+  cm.replaceRange(c.text, c.from, c.to);
+  cm.setCursor(r.cursor);
+}
 // Obsidian's own Vim (no getMotion, unlike Vim Motions) takes `in` as Vim's text object `n`
 // before the m of `inm` arrives (any full match wins over a longer partial one), and gives
 // no way to wrap ; and ,. There the keys are caught here and handed to Vim as one private
@@ -1133,6 +1316,11 @@ function register(opts = OPTS) {
   Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
   Vim.defineMotion("latexNamedPrompt", latexNamedPrompt);
   Vim.defineMotion("latexMatch", latexMatch);
+  Vim.defineAction("latexSwap", latexSwap);
+  for (const [keys, args] of SWAPS) {
+    dropKeys(Vim, keys);
+    Vim.mapCommand(keys, "action", "latexSwap", args, { isEdit: true }); // no context: unmap only drops context-less ones
+  }
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
   for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
     ["latexNamedPrompt", opts.jumps ? NAMED : []], ["latexMatch", opts.match ? MATCH : []]]) for (const [keys, args] of list) {
@@ -1156,7 +1344,7 @@ function dropKeys(Vim, keys) {
 }
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH]) dropKeys(Vim, keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH, ...SWAPS]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
@@ -1386,4 +1574,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
+module.exports.core = { scriptSpans, tableSpans, rowSpans, cellSpans, moveChanges, swapAt, mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
