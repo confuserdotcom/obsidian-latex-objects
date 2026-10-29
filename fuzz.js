@@ -11,7 +11,7 @@ function rng(seed) { // mulberry32
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 const TOKENS = ["$", "$", "$$", "\\", "\\$", "\\\\", "(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\begin{a}", "\\end{a}",
-  "\\begin{b*}", "\\end{b*}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n~~~ js\n", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
+  "\\begin{b*}", "\\end{b*}", "\\left(", "\\right)", "\\left[", "\\right]", "\\left\\{", "\\right\\}", "\\left[\\!\\left[", "\\right] \\!\\right]", "\\left]\\!\\left]", "\\right[ \\!\\right[", "`", "```", "\n```\n", "\n````\n", "\n~~~ js\n", "\\big(", "\\Bigr)", "\\bigl[", "\\big]", "x", "yz", " ", " ", "é", "∀", "😀", "𝔸", "\n> ", "\n> > ", "\n> [!note]\n> ", "\n", "\n", "\n", "\n\n", "\n".repeat(30)];
 function doc(r) {
   let s = "";
   const n = 1 + Math.floor(r() * (r() < 0.1 ? 400 : 40));
@@ -81,9 +81,11 @@ try {
           assert(open === "\\begin{" + s.name + "}" && close === "\\end{" + s.name + "}", "env names differ");
         } else {
           const iv = t => /^\\(left|right)([[\]])\s*\\!\s*\\\1\2$/.test(t);
-          const bare = t => t.replace(/^\\(left|right)\s*/, "");
+          // the size: \left / \right, or any \big \Big \bigg \Bigg (l / r), or none
+          const sz = /^\\(?:(left|right)|[bB]igg?[lr]?)\s*/, kind = t => { const m = sz.exec(t); return m ? (m[1] ? "left" : "big") : ""; };
+          const bare = t => t.replace(sz, "");
           if (iv(open) || iv(close)) assert(iv(open) && iv(close) && open.startsWith("\\left") && close.startsWith("\\right"), `interval pair ${open}${close}`);
-          else assert({ "(": ")", "[": "]", "{": "}", "\\{": "\\}" }[bare(open)] === bare(close) && open.startsWith("\\left") === close.startsWith("\\right"), `bracket pair ${open}${close}`);
+          else assert({ "(": ")", "[": "]", "{": "}", "\\{": "\\}" }[bare(open)] === bare(close) && kind(open) === kind(close), `bracket pair ${open}${close}`);
           const want = { paren: "(", brace: "{", square: "[" }[obj], first = iv(open) ? "[" : bare(open).replace("\\", "");
           assert(s.type === want && first === want, `${obj} got ${open}`);
         }
@@ -92,12 +94,21 @@ try {
       // a fence line inside an open $$ block is maths text, not a fence)
       if (obj === "math") {
         const inFence = [];
-        let fence = false;
+        // CommonMark: a fence closes with the same character, at least as long, nothing after
+        // it; a fence opened in a blockquote ends with the quote
+        let fence = null;
         const displayOpenAt = r => spans.some(s => s.kind === "display" && s.a.line < r && r <= s.b.line);
         lines.forEach((ln, i) => {
-          const isFence = /^\s*(```|~~~)/.test(ln) && !displayOpenAt(i);
-          inFence[i] = fence || isFence;
-          if (isFence) fence = !fence;
+          const q = /^[ \t]*((?:>[ \t]*)*)(.*)$/.exec(ln), depth = (q[1].match(/>/g) || []).length, f = /^(`{3,}|~{3,})(.*)$/.exec(q[2]);
+          if (fence && depth < fence.depth) fence = null;
+          if (fence) {
+            inFence[i] = true;
+            if (f && f[1][0] === fence.c && f[1].length >= fence.n && !f[2].trim()) fence = null;
+            return;
+          }
+          const opens = f && !displayOpenAt(i) && !(f[1][0] === "`" && f[2].includes("`"));
+          inFence[i] = !!opens;
+          if (opens) fence = { c: f[1][0], n: f[1].length, depth };
         });
         for (const s of spans) assert(!inFence[s.a.line] && !inFence[s.b.line], "maths found inside a code block");
       }

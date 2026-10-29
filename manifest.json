@@ -1,7 +1,7 @@
 {
   "id": "latex-objects",
   "name": "LaTeX Objects",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.5.0",
   "description": "Vim text objects, jumps and editing commands for LaTeX maths, environments and brackets.",
   "author": "confuserdotcom",

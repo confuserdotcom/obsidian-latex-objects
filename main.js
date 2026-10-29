@@ -47,11 +47,17 @@ const at = (line, ch) => ({ line, ch });
 // next character; $ inside ``` fences and `inline code` is text; inline $ never spans lines.
 function mathSpans(lines) {
   const out = [];
-  let open = null, fence = false;
+  let open = null, fence = null;
   for (let r = 0; r < lines.length; r++) {
     const line = lines[r];
-    if (!open && /^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
-    if (fence) continue;
+    // a fence closes with the same character, at least as long, or when its blockquote / callout ends
+    const quotes = (prefixOf(line).match(/>/g) || []).length, f = /^(`{3,}|~{3,})(.*)$/.exec(line.slice(prefixOf(line).length));
+    if (fence && quotes < fence.quotes) fence = null;
+    if (fence) {
+      if (f && f[1][0] === fence.c && f[1].length >= fence.len && blank(f[2])) fence = null;
+      continue;
+    }
+    if (!open && f && !(f[1][0] === "`" && f[2].includes("`"))) { fence = { c: f[1][0], len: f[1].length, quotes }; continue; }
     let iopen = -1;
     for (let i = 0; i < line.length; i++) {
       const c = line[i];
@@ -63,6 +69,8 @@ function mathSpans(lines) {
       }
       if (c !== "$") continue;
       if (line[i + 1] === "$") {
+        // "$a$$b$": the first $ closes the open $a$, the second opens $b$
+        if (!open && iopen >= 0) { out.push({ kind: "inline", a: at(r, iopen), ae: at(r, iopen + 1), bs: at(r, i), b: at(r, i + 1) }); iopen = -1; continue; }
         if (open) { out.push({ kind: "display", a: open, ae: at(open.line, open.ch + 2), bs: at(r, i), b: at(r, i + 2) }); open = null; }
         else if ((onlyPrefix(line.slice(0, i)) && blank(line.slice(i + 2))) || closesInParagraph(lines, r, i + 2)) open = at(r, i);
         // "Soit $$ ok": the empty inline maths Latex Suite leaves while you type, not a $$ opener
@@ -116,9 +124,13 @@ const PAIR = { ")": "(", "]": "[", "}": "{" };
 // \left( … \right) is one bracket (so ib never takes the \right), and so are the interval
 // snippets icc ico ioc ioo: \left[\!\left[ a; b \right]\!\right] and their ]…[ variants.
 // \{ … \} (sets) and \left\{ … \right\} are braces for iB; each closes only its own kind.
-const OPENERS = [[/\\left([[\]])\s*\\!\s*\\left\1/y, "⟦"], [/\\left\s*\\\{/y, "\\left\\{"], [/\\\{/y, "\\{"], [/\\left\s*([([{])/y, null]];
-const CLOSERS = [[/\\right([[\]])\s*\\!\s*\\right\1/y, "⟦"], [/\\right\s*\\\}/y, "\\left\\{"], [/\\\}/y, "\\{"], [/\\right\s*([)\]}])/y, null]];
-const TYPE = { "⟦": "[", "\\left\\{": "{", "\\{": "{" };
+// \big( … \big) (and \Big \bigg \Bigg, \bigl \bigr) is one bracket too, like \left( \right).
+// A null kind is the opener's own bracket after the size: "\left(", "\big(".
+const OPENERS = [[/\\left([[\]])\s*\\!\s*\\left\1/y, "⟦"], [/\\left\s*\\\{/y, "\\left\\{"], [/\\[bB]igg?l?\s*\\\{/y, "\\big\\{"], [/\\\{/y, "\\{"],
+  [/\\left\s*([([{])/y, null, "\\left"], [/\\[bB]igg?l?\s*([([])/y, null, "\\big"]];
+const CLOSERS = [[/\\right([[\]])\s*\\!\s*\\right\1/y, "⟦"], [/\\right\s*\\\}/y, "\\left\\{"], [/\\[bB]igg?r?\s*\\\}/y, "\\big\\{"], [/\\\}/y, "\\{"],
+  [/\\right\s*([)\]}])/y, null, "\\left"], [/\\[bB]igg?r?\s*([)\]])/y, null, "\\big"]];
+const TYPE = { "⟦": "[", "\\left\\{": "{", "\\big\\{": "{", "\\{": "{" };
 const sticky = (re, line, i) => { re.lastIndex = i; return re.exec(line); };
 function bracketSpans(lines) {
   const out = [], stack = [];
@@ -135,10 +147,10 @@ function bracketSpans(lines) {
     for (let i = 0; i < line.length; i++) {
       const c = line[i];
       if (c === "\\") {
-        const o = OPENERS.map(([re, k]) => [sticky(re, line, i), k]).find(([m]) => m);
-        const q = !o && CLOSERS.map(([re, k]) => [sticky(re, line, i), k]).find(([m]) => m);
-        if (o) { const [m, k] = o; stack.push({ c: k || "\\left" + m[1], t: TYPE[k] || m[1], a: at(r, i), ae: at(r, i + m[0].length) }); i += m[0].length - 1; }
-        else if (q) { const [m, k] = q; close(k || "\\left" + PAIR[m[1]], r, i, i + m[0].length); i += m[0].length - 1; }
+        const o = OPENERS.map(([re, k, pre]) => [sticky(re, line, i), k, pre]).find(([m]) => m);
+        const q = !o && CLOSERS.map(([re, k, pre]) => [sticky(re, line, i), k, pre]).find(([m]) => m);
+        if (o) { const [m, k, pre] = o; stack.push({ c: k || pre + m[1], t: TYPE[k] || m[1], a: at(r, i), ae: at(r, i + m[0].length) }); i += m[0].length - 1; }
+        else if (q) { const [m, k, pre] = q; close(k || pre + PAIR[m[1]], r, i, i + m[0].length); i += m[0].length - 1; }
         else i++;
         continue;
       }
@@ -247,7 +259,8 @@ function range(s, lines, inner) {
   }
   let start = s.ae, end = s.bs;
   if (blankAfter(start) && blankBefore(end) && end.line > start.line + 1) return { start: at(start.line + 1, 0), end: eol(end.line - 1), linewise: true };
-  if (blankAfter(start) && start.line < end.line) start = at(start.line + 1, 0);
+  // not the "> " of a blockquote / callout line: taking it would break the quote
+  if (blankAfter(start) && start.line < end.line) start = at(start.line + 1, (lines[start.line + 1].match(/^[ \t]*(?:>[ \t]*)+/) || [""])[0].length);
   if (blankBefore(end) && end.line > start.line) end = eol(end.line - 1);
   return { start, end };
 }
@@ -465,7 +478,9 @@ function alignChanges(lines, s) {
     const body = t.slice(1, -1);
     inner = /^(align|aligned)/.test(env[1]) ? body : body.map(ampBeforeRelation);
   } else inner = inner.map(ampBeforeRelation).map((l, k, all) => (k < all.length - 1 && !blank(l) && !/\\\\\s*$/.test(l) ? l + " \\\\" : l));
-  const before = lines[s.a.line].slice(0, s.a.ch), after = lines[s.b.line].slice(s.b.ch), P = prefixOf(before);
+  const before = lines[s.a.line].slice(0, s.a.ch), after = lines[s.b.line].slice(s.b.ch);
+  // in a list item ("- ", "1. ") the new lines are indented under its text, so they stay in the item
+  const item = /^([ \t]*(?:>[ \t]*)*)([-*+]|\d+[.)])([ \t]+)/.exec(before), P = item ? item[1] + " ".repeat(item[2].length + item[3].length) : prefixOf(before);
   const body = ["$$", "\\begin{align}", ...inner, "\\end{align}", "$$"].map(l => P + l);
   const out = [...(onlyPrefix(before) ? [] : [before.trimEnd()]), ...body, ...(blank(after) ? [] : [P + after.trimStart()])];
   return [{ from: at(s.a.line, 0), to: at(s.b.line, lines[s.b.line].length), text: out.join("\n") }];
@@ -492,7 +507,7 @@ function starChanges(s) {
 const TARGET = { b: "(", "(": "(", ")": "(", B: "{", "{": "{", "}": "{", r: "[", "[": "[", "]": "[" };
 const OBJ_OF = { "(": "paren", "{": "brace", "[": "square" };
 function surroundChanges(lines, s, target, repl, inMaths) {
-  const open = slice(lines, s.a, s.ae), sized = /^\\left/.test(open);
+  const open = slice(lines, s.a, s.ae), size = /^\\(left|[bB]igg?)/.exec(open), sized = !!size;
   let from = s.ae, to = s.bs;
   const spaced = repl && "([{".includes(repl);
   if ("([{".includes(target) || spaced || (!repl && sized)) {
@@ -507,7 +522,8 @@ function surroundChanges(lines, s, target, repl, inMaths) {
   let o = "", c = "";
   if (repl) {
     const t = TARGET[repl];
-    [o, c] = sized ? { "(": ["\\left(", "\\right)"], "[": ["\\left[", "\\right]"], "{": ["\\left\\{", "\\right\\}"] }[t]
+    const B = { "(": ["(", ")"], "[": ["[", "]"], "{": ["\\{", "\\}"] }[t];
+    [o, c] = size && size[1] === "left" ? ["\\left" + B[0], "\\right" + B[1]] : size ? [size[0] + B[0], size[0] + B[1]]
       : t === "{" ? (inMaths ? ["\\{", "\\}"] : ["{", "}"]) : t === "(" ? ["(", ")"] : ["[", "]"];
     if (spaced) { o += " "; c = " " + c; }
   }
@@ -516,8 +532,8 @@ function surroundChanges(lines, s, target, repl, inMaths) {
 const inMathsAt = (lines, p) => mathSpans(lines).some(m => cmp(m.a, p) <= 0 && cmp(p, m.b) < 0);
 
 // Size bracket: ( ) [ ] \{ \} ⇄ \left( \right) … — the nearest bracket of any kind that can be
-// sized (a bare { } is LaTeX grouping, the ⟦ ⟧ intervals are sized already).
-const sizable = (lines, s) => !/^\{$|\\!/.test(slice(lines, s.a, s.ae));
+// sized (a bare { } is LaTeX grouping, the ⟦ ⟧ intervals and \big( \big) are sized already).
+const sizable = (lines, s) => !/^\{$|\\!|^\\[bB]ig/.test(slice(lines, s.a, s.ae));
 function sizeChanges(lines, s) {
   const open = slice(lines, s.a, s.ae), close = slice(lines, s.bs, s.b);
   if (!/^\\left/.test(open)) return [{ from: s.a, to: s.a, text: "\\left" }, { from: s.bs, to: s.bs, text: "\\right" }];
@@ -962,7 +978,8 @@ class LatexObjects extends Plugin {
       if (changes.length) editor.transaction({ changes });
     };
     cm.on("vim-mode-change", done);
-    Vim.handleKey(cm, "i", "mapping");
+    // from insert mode (a hotkey) "i" would be typed: already there, so just wait for <Esc>
+    if (!(cm.state.vim && cm.state.vim.insertMode)) Vim.handleKey(cm, "i", "mapping");
   }
 
   // Undo until the note reads `text` again; if it can't get there, redo it all back.

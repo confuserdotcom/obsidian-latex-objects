@@ -521,5 +521,36 @@ t("seek distance setting limits how far the nearest one is looked for", () => {
   } finally { CONFIG.seekLines = old; }
 });
 
+// ─── 1.0.2 fixes ───
+t("fence closes only with the same character, at least as long", () => {
+  const l = L("```\n~~~\n$a$\n```\n````\n```\n$b$\n````\n$c$");
+  assert.deepStrictEqual(mathSpans(l).map(s => whole(l, s)), ["$c$"]);
+});
+t("fence inside a callout, ended by the callout", () => {
+  const l = L("> ```\n> $a$\n> ```\n> $b$\n> ```\n> $c$\n\n$d$");
+  assert.deepStrictEqual(mathSpans(l).map(s => whole(l, s)), ["$b$", "$d$"]);
+});
+t("$a$$b$ is two inline maths", () => {
+  const l = L("$a$$b$");
+  assert.deepStrictEqual(mathSpans(l).map(s => whole(l, s)), ["$a$", "$b$"]);
+});
+t("\\big( \\big) is one bracket: ib keeps the sizes out", () => {
+  const l = L("\\big( x \\Bigr) \\bigl[ y \\bigr] \\Big\\{ z \\Big\\}");
+  assert.deepStrictEqual(bracketSpans(l).map(s => [s.type, text(l, s.ae, s.bs)]), [["(", " x "], ["[", " y "], ["{", " z "]]);
+});
+t("cs b B on \\big( keeps the size, size-bracket skips it", () => {
+  const l = L("$\\big( x \\big)$"), s = bracketSpans(l)[0];
+  assert.strictEqual(apply(l, surroundChanges(l, s, "b", "B", true)), "$\\big\\{ x \\big\\}$");
+  assert.strictEqual(sizable(l, s), false);
+});
+t("im on an empty callout display keeps the > of its last line", () => {
+  const l = L("> $$\n> $$"), r = range(mathSpans(l)[0], l, true);
+  assert.deepStrictEqual([r.start, r.end], [at(1, 2), at(1, 2)]);
+});
+t("align in a list item indents under the item", () => {
+  const l = L("1. $x = 1$");
+  assert.strictEqual(apply(l, alignChanges(l, mathSpans(l)[0])), "1.\n   $$\n   \\begin{align}\n   x &= 1\n   \\end{align}\n   $$");
+});
+
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
 console.log(`ok — ${n} tests`);
