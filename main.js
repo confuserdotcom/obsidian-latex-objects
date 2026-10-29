@@ -260,7 +260,7 @@ function nearer(s, t, pos) {
 // (all three within CONFIG.seekLines).
 // Seeking stops CONFIG.seekLines lines from the cursor (default 50, mini.ai's n_lines), so an edit never
 // lands on maths you can't see; the span around the cursor is always found.
-const CONFIG = { seekLines: 50, flash: true, flashMs: 250 };   // the settings tab writes these
+const CONFIG = { seekLines: 50, flash: true, flashMs: 250, highlight: true };   // the settings tab writes these
 function pick(spans, pos, which) {
   let cur = null, next = null, last = null, near = null;
   for (const s of spans) {
@@ -912,6 +912,25 @@ function flashLater(cm, r) {
   }, 0);
 }
 
+// ─── Match highlight (like matchparen) ────────────────────────────────────────
+// The cursor on \begin{…} \end{…}, \left… \right… or $ / $$ marks it and its partner.
+// Only lines that could hold one get the full scan; big notes are skipped.
+const mayBeDelim = (line, ch) => line[ch] === "$" || /\\(begin|end|left|right)/.test(line);
+function matchDeco(view) {
+  const doc = view.state.doc;
+  if (!CONFIG.highlight || doc.lines > 5000) return CMView.Decoration.none;
+  const head = view.state.selection.main.head, line = doc.lineAt(head), ch = head - line.from;
+  if (!mayBeDelim(line.text, ch)) return CMView.Decoration.none;
+  const d = delimAt(doc.toString().split("\n"), at(line.number - 1, ch));
+  if (!d) return CMView.Decoration.none;
+  const off = p => doc.line(p.line + 1).from + p.ch, mark = CMView.Decoration.mark({ class: "latex-objects-match" });
+  return CMView.Decoration.set([d.here, d.there].map(([p, q]) => mark.range(off(p), off(q))), true);
+}
+const matchPlugin = CMView && CMView.ViewPlugin.fromClass(class {
+  constructor(view) { this.decorations = matchDeco(view); }
+  update(u) { if (u.docChanged || u.selectionSet) this.decorations = matchDeco(u.view); }
+}, { decorations: v => v.decorations });
+
 // ds / cs go through Vim Motions' own "surroundAction" (keys s<character> after an operator):
 // wrap it, take bracket targets with d / c, hand everything else (ys, ds m, cs " ' …) back.
 function surroundAction(orig) {
@@ -1050,7 +1069,7 @@ function unregister() {
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
 }
 
-const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 };
+const DEFAULTS = { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 };
 // Saved data → settings, bad or missing values back to their default.
 function cleanSettings(data) {
   const d = Object.assign({}, DEFAULTS, data || {}), out = {};
@@ -1068,6 +1087,7 @@ class LatexObjects extends Plugin {
     await this.loadSettings();
     this.addSettingTab(new LatexObjectsSettings(this.app, this));
     if (flashField) this.registerEditorExtension(flashField);
+    if (matchPlugin) this.registerEditorExtension(matchPlugin);
     this.app.workspace.onLayoutReady(() => { this.patchReloads(); this.applyKeys(); });
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => { this.patchReloads(); this.applyKeys(); }));
     this.registerDomEvent(window, "keydown", e => onKeydown(e, this.app.workspace.activeEditor && vimAdapter(this.app.workspace.activeEditor.editor)), true);
@@ -1101,12 +1121,12 @@ class LatexObjects extends Plugin {
 
   async loadSettings() {
     this.settings = cleanSettings(await this.loadData());
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs, highlight: this.settings.highlight });
   }
   async saveSettings() {
     this.settings = cleanSettings(this.settings);
     await this.saveData(this.settings);
-    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs });
+    Object.assign(CONFIG, { seekLines: this.settings.seekLines, flash: this.settings.flash, flashMs: this.settings.flashMs, highlight: this.settings.highlight });
     this.applyKeys();
   }
   applyKeys() { register(this.settings); }
@@ -1223,6 +1243,8 @@ class LatexObjectsSettings extends PluginSettingTab {
       .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
     new Setting(containerEl).setName("Match with %").setDesc("% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.")
       .addToggle(t => t.setValue(p.settings.match).onChange(v => set("match", v)));
+    new Setting(containerEl).setName("Highlight matching delimiter").setDesc("With the cursor on \\begin{…} \\end{…}, \\left \\right or $ / $$, mark it and its partner.")
+      .addToggle(t => t.setValue(p.settings.highlight).onChange(v => set("highlight", v)));
     new Setting(containerEl).setName("Flash").setDesc("Highlight what y, >, gU … acted on for a moment.")
       .addToggle(t => t.setValue(p.settings.flash).onChange(v => { set("flash", v); this.display(); }));
     if (p.settings.flash) new Setting(containerEl).setName("Flash duration").setDesc("In milliseconds.")
@@ -1231,4 +1253,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget };
+module.exports.core = { mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim };

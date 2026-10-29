@@ -507,10 +507,10 @@ t("cursor: toggle alone on its line → display keeps it on its letter", () => a
 
 // ─── settings ───
 const { cleanSettings, CONFIG } = require("./main.js").core;
-t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 }));
+t("settings: nothing saved → defaults", () => assert.deepStrictEqual(cleanSettings(null), { seekLines: 50, jumps: true, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 }));
 t("settings: saved values kept, junk back to default", () => {
   const c = cleanSettings({ seekLines: 20, jumps: false, flash: "yes", flashMs: NaN, match: 0, other: 1 });
-  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, match: true, flash: true, flashMs: 250 });
+  assert.deepStrictEqual(c, { seekLines: 20, jumps: false, repeatJumps: true, surround: true, match: true, highlight: true, flash: true, flashMs: 250 });
 });
 t("settings: numbers clamped and rounded", () => {
   assert.strictEqual(cleanSettings({ seekLines: 0 }).seekLines, 1);
@@ -661,6 +661,14 @@ t("%: where it goes — normal, visual forward, operator", () => {
   assert.deepStrictEqual(matchTarget(back, true, false), [at(0, 0), at(0, 3)]);
   const env = delimAt(L("\\begin{a}x\\end{a}"), at(0, 0));
   assert.deepStrictEqual(matchTarget(env, false, true), at(0, 16));
+});
+
+// ─── match highlight ───
+const { mayBeDelim } = require("./main.js").core;
+t("highlight: cheap test before the full scan", () => {
+  assert.ok(mayBeDelim("a $x$", 2));
+  assert.ok(mayBeDelim("\\begin{a}", 3));
+  assert.ok(!mayBeDelim("plain (text)", 6));
 });
 
 if (failed) { console.log(`${failed} failed, ${n} passed`); process.exit(1); }
