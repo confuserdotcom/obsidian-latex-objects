@@ -882,6 +882,28 @@ t("range: aR on a row alone on its line is linewise", () => {
   assert.deepStrictEqual(range(r0, l, false), { start: at(1, 0), end: at(1, 4), linewise: true });
   assert.deepStrictEqual(range(r1, l, false), { start: at(1, 1), end: at(2, 1) });
 });
+const { swapAt } = require("./main.js").core;
+const swap = (s, pos, what, fwd, n) => { const l = L(s), r = swapAt(l, pos, what, fwd, n); return r.none || [apply(l, r.changes), [r.cursor.line, r.cursor.ch]]; };
+t("swap: >, swaps \\frac's arguments, the cursor goes along", () => assert.deepStrictEqual(swap("$\\frac{a}{bb}$", at(0, 7), "arg", true), ["$\\frac{bb}{a}$", [0, 11]]));
+t("swap: <, from the second argument", () => assert.deepStrictEqual(swap("$\\frac{a}{bb}$", at(0, 11), "arg", false), ["$\\frac{bb}{a}$", [0, 8]]));
+t("swap: on the name, the first argument moves", () => assert.deepStrictEqual(swap("$\\frac{a}{b}$", at(0, 2), "arg", true)[0], "$\\frac{b}{a}$"));
+t("swap: optional arguments stay", () => assert.deepStrictEqual(swap("$\\x[o]{a}[p]{b}$", at(0, 8), "arg", true)[0], "$\\x[o]{b}[p]{a}$"));
+t("swap: nested commands move with their argument", () => assert.deepStrictEqual(swap("$\\frac{\\sqrt{x}}{y}$", at(0, 15), "arg", true)[0], "$\\frac{y}{\\sqrt{x}}$"));
+t("swap: the innermost argument around the cursor", () => assert.deepStrictEqual(swap("$\\frac{\\b{x}{z}}{y}$", at(0, 11), "arg", true)[0], "$\\frac{\\b{z}{x}}{y}$"));
+t("swap: a count moves it that many places", () => assert.deepStrictEqual(swap("$\\f{a}{b}{c}$", at(0, 4), "arg", true, 2), ["$\\f{b}{c}{a}$", [0, 10]]));
+t("swap: over lines, the cursor keeps its place in the text", () => assert.deepStrictEqual(swap("$$\n\\frac{a\nb}{c}\n$$", at(2, 0), "arg", true), ["$$\n\\frac{c}{a\nb}\n$$", [2, 0]]));
+t("swap: nothing to swap with", () => {
+  assert.strictEqual(swap("$\\frac{a}{b}$", at(0, 10), "arg", true), "No next argument");
+  assert.strictEqual(swap("$\\frac{a}{b}$", at(0, 7), "arg", true, 2), "No next argument");
+  assert.strictEqual(swap("$\\sqrt[n]{x}$", at(0, 7), "arg", false), "Not in a { } argument");
+  assert.strictEqual(swap("$x$", at(0, 1), "arg", true), "Not in a { } argument");
+});
+t("swap: >& <& swap cells, gaps stay", () => {
+  assert.deepStrictEqual(swap("\\begin{matrix}a & bb \\\\ c\\end{matrix}", at(0, 14), "cell", true), ["\\begin{matrix}bb & a \\\\ c\\end{matrix}", [0, 19]]);
+  assert.deepStrictEqual(swap("\\begin{matrix}a & bb\\end{matrix}", at(0, 17), "cell", false)[0], "\\begin{matrix}bb & a\\end{matrix}");
+  assert.strictEqual(swap("\\begin{matrix}a \\\\ b\\end{matrix}", at(0, 14), "cell", true), "No next cell");
+  assert.strictEqual(swap("$x$", at(0, 1), "cell", true), "Not in a cell");
+});
 
 (async () => {
   for (const [name, fn] of tests) {

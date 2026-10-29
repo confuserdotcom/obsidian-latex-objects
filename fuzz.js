@@ -112,6 +112,25 @@ try {
       }
       stats.spans += 1 + row.cells.length;
     }
+    // a swap trades the two texts and leaves the rest of the note as it was
+    const swapped = (items, k) => apply(lines, [{ from: items[k].ae, to: items[k].bs, text: text(lines, items[k + 1].ae, items[k + 1].bs) },
+      { from: items[k + 1].ae, to: items[k + 1].bs, text: text(lines, items[k].ae, items[k].bs) }]);
+    for (const row of C.rowSpans(lines)) {
+      if (row.cells.length < 2) continue;
+      const got = C.swapAt(lines, row.cells[0].ae, "cell", true);
+      assert.strictEqual(apply(lines, got.changes), swapped(row.cells, 0), "cell swap");
+      stats.edits++;
+    }
+    for (const s of cmds) {
+      const req = s.args.filter(g => !g.opt);
+      if (req.length < 2) continue;
+      // at req[0].ae the cursor may be on a nested command's name or in a nested argument
+      // ({\\x{a}{b}}…, {{x}…}): that one would move
+      if (cmds.some(c => !cmp(c.a, req[0].ae)) || C.argSpans(lines).some(g => !g.opt && g !== req[0] && cmp(g.a, req[0].ae) <= 0 && cmp(req[0].ae, g.b) < 0 && cmp(g.a, req[0].a) > 0)) continue;
+      const got = C.swapAt(lines, req[0].ae, "arg", true);
+      assert.strictEqual(apply(lines, got.changes), swapped(req, 0), "argument swap");
+      stats.edits++;
+    }
     // %: from any delimiter, its partner leads back to it
     current = `doc ${d} partner ${JSON.stringify(src)}`;
     for (let l = 0; l < lines.length; l++) for (let ch = 0; ch < lines[l].length; ch++) {

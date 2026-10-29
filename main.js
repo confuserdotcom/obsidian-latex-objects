@@ -345,6 +345,43 @@ function tableSpans(lines) {
 }
 const rowSpans = lines => tableSpans(lines);
 const cellSpans = lines => tableSpans(lines).flatMap(r => r.cells);
+// Position after typing `str` at p.
+function advance(p, str) {
+  const parts = str.split("\n");
+  return parts.length === 1 ? at(p.line, p.ch + str.length) : at(p.line + parts.length - 1, parts[parts.length - 1].length);
+}
+// Move items[from] to index `to` among its siblings (each { ae, bs }, in order), the others
+// shifting over: one change from the first to the last touched. The cursor keeps its place in
+// the moved text. → { changes, cursor }
+function moveChanges(lines, items, from, to, pos) {
+  const lo = Math.min(from, to), hi = Math.max(from, to), run = items.slice(lo, hi + 1);
+  const texts = run.map(s => slice(lines, s.ae, s.bs)), gaps = run.slice(1).map((s, k) => slice(lines, run[k].bs, s.ae));
+  const [moved] = texts.splice(from - lo, 1);
+  texts.splice(to - lo, 0, moved);
+  let text = "", start = null;
+  texts.forEach((t, k) => { if (k === to - lo) start = advance(items[lo].ae, text); text += t + (k < gaps.length ? gaps[k] : ""); });
+  const m = items[from], inside = cmp(pos, m.ae) >= 0 && cmp(pos, m.bs) <= 0;
+  return { changes: [{ from: items[lo].ae, to: items[hi].bs, text }], cursor: inside ? advance(start, slice(lines, m.ae, pos)) : start };
+}
+// >, <, >& <&: the {…} argument (what "arg") or cell (what "cell") at pos, moved count places
+// forward / back among its command's {…} arguments / its row's cells. → { changes, cursor } or
+// { none: message }.
+function swapAt(lines, pos, what, forward, count = 1) {
+  let items, s;
+  if (what === "arg") {
+    const cmd = commandSpans(lines).find(c => c.args.length && cmp(c.a, pos) <= 0 && cmp(pos, c.ae) < 0);
+    s = cmd ? cmd.args.find(g => !g.opt) : around(argSpans(lines).filter(g => !g.opt), pos);
+    if (!s) return { none: "Not in a { } argument" };
+    items = s.cmd.args.filter(g => !g.opt);
+  } else {
+    s = around(cellSpans(lines), pos);
+    if (!s) return { none: "Not in a cell" };
+    items = s.row.cells;
+  }
+  const from = items.indexOf(s), to = from + (forward ? count : -count);
+  if (to < 0 || to >= items.length) return { none: `No ${forward ? "next" : "previous"} ${what === "arg" ? "argument" : "cell"}` };
+  return moveChanges(lines, items, from, to, pos);
+}
 const namedSpans = (lines, name) => commandSpans(lines).filter(s => s.name === name);
 // For the prompt's Tab: the names in the note's maths, most used first.
 function commandNames(lines) {
@@ -858,6 +895,9 @@ const REPEATS = [["<LxRep-f>", { forward: true }], ["<LxRep-b>", { forward: fals
 // ]C [C ask for a name; once it is typed, <LxGo> makes the move (as a ; would)
 const NAMED = [["]C", { forward: true }], ["[C", { forward: false }]], GO = [["<LxGo>", { forward: true }]];
 const MATCH = [["<LxPct>", {}]]; // the private key matchKey sends for % on our delimiters
+// >, <, >& <&: the private keys swapKey sends, mapped to the swap action
+const SWAPS = [["<LxSwap-a>", { what: "arg", forward: true }], ["<LxSwap-A>", { what: "arg", forward: false }],
+  ["<LxSwap-c>", { what: "cell", forward: true }], ["<LxSwap-C>", { what: "cell", forward: false }]];
 const JUMPS = [["]m", { obj: "math", forward: true }], ["[m", { obj: "math", forward: false }],
   ["]M", { obj: "display", forward: true }], ["[M", { obj: "display", forward: false }],
   ["]e", { obj: "env", forward: true }], ["[e", { obj: "env", forward: false }],
@@ -1006,11 +1046,33 @@ function matchKey(e, cm) {
 function onKeydown(e, cm) {
   if (holding || (e.target && e.target.classList && e.target.classList.contains("latex-objects-prompt"))) return; // typing a name
   if (cm && cm.state.vim) { keyAt = { visual: !!cm.state.vim.visualMode, cur: cm.getCursor() }; window.setTimeout(() => (keyAt = null), 0); }
-  if (matchKey(e, cm) || stockKey(e, cm)) return;
+  if (matchKey(e, cm) || swapKey(e, cm) || stockKey(e, cm)) return;
   if (e.key === "v" || e.key === "V") madeSel = null; // a new visual selection (v V Ctrl-v)
   if (e.key.length === 1 && "fFtT".includes(e.key) && !e.ctrlKey && !e.metaKey && !(cm && cm.state.vim && cm.state.vim.insertMode)) lastJump = null;
 }
 
+// >, <, >& <&: Vim reads > / < as the indent operator before the , or & comes (a full match
+// wins over a longer one), so a , or & right after it is caught here: the operator is dropped
+// and the count and one private key go to Vim, mapped to the swap action (so `.` repeats it).
+function swapKey(e, cm) {
+  const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim, vim = cm && cm.state && cm.state.vim;
+  if ((e.key !== "," && e.key !== "&") || !Vim || !vim || vim.insertMode || vim.visualMode || e.ctrlKey || e.metaKey || e.altKey || !(cm.cm6 && cm.cm6.hasFocus)) return false;
+  const st = vim.inputState;
+  if (!st || st.operator !== "indent" || [].concat(st.keyBuffer || []).length) return false;
+  const count = st.getRepeat ? st.getRepeat() : 0, fwd = !!(st.operatorArgs && st.operatorArgs.indentRight);
+  e.preventDefault(); e.stopImmediatePropagation();
+  Vim.handleKey(cm, "<Esc>", "user");
+  for (const d of count > 1 ? String(count) : "") Vim.handleKey(cm, d, "user");
+  Vim.handleKey(cm, `<LxSwap-${e.key === "," ? (fwd ? "a" : "A") : fwd ? "c" : "C"}>`, "user");
+  return true;
+}
+function latexSwap(cm, args) {
+  const cur = cm.getCursor(), r = swapAt(lineArray(cm), at(cur.line, cur.ch), args.what, args.forward, args.repeat || 1);
+  if (r.none) { new Notice(r.none); return; }
+  const [c] = r.changes;
+  cm.replaceRange(c.text, c.from, c.to);
+  cm.setCursor(r.cursor);
+}
 // Obsidian's own Vim (no getMotion, unlike Vim Motions) takes `in` as Vim's text object `n`
 // before the m of `inm` arrives (any full match wins over a longer partial one), and gives
 // no way to wrap ; and ,. There the keys are caught here and handed to Vim as one private
@@ -1245,6 +1307,11 @@ function register(opts = OPTS) {
   Vim.defineMotion("latexRepeat", (cm, head, args) => lastJump ? againJump(cm, head, args) : head);
   Vim.defineMotion("latexNamedPrompt", latexNamedPrompt);
   Vim.defineMotion("latexMatch", latexMatch);
+  Vim.defineAction("latexSwap", latexSwap);
+  for (const [keys, args] of SWAPS) {
+    dropKeys(Vim, keys);
+    Vim.mapCommand(keys, "action", "latexSwap", args, { isEdit: true, context: "normal" });
+  }
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
   for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
     ["latexNamedPrompt", opts.jumps ? NAMED : []], ["latexMatch", opts.match ? MATCH : []]]) for (const [keys, args] of list) {
@@ -1268,7 +1335,7 @@ function dropKeys(Vim, keys) {
 }
 function unregister() {
   const Vim = window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim;
-  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH]) dropKeys(Vim, keys);
+  if (Vim) for (const [keys] of [...KEYS, ...ALIASES, ...JUMPS, ...REPEATS, ...NAMED, ...GO, ...MATCH, ...SWAPS]) dropKeys(Vim, keys);
   const cur = Vim && Vim.getAction && Vim.getAction("surroundAction");
   if (cur && cur.latexOrig) Vim.defineAction("surroundAction", cur.latexOrig);
   if (Vim && Vim.latexRepeatOrig) { Vim.defineMotion("repeatLastCharacterSearch", Vim.latexRepeatOrig); delete Vim.latexRepeatOrig; }
@@ -1498,4 +1565,4 @@ class LatexObjectsSettings extends PluginSettingTab {
 }
 
 module.exports = LatexObjects;
-module.exports.core = { scriptSpans, tableSpans, rowSpans, cellSpans, mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
+module.exports.core = { scriptSpans, tableSpans, rowSpans, cellSpans, moveChanges, swapAt, mathSpans, envSpans, bracketSpans, SPANS, surroundChanges, sizeChanges, sizable, pick, range, unwrapChanges, envUnwrapChanges, renameExtras, ampBeforeRelation, applyChanges, deleteChanges, toggleChanges, alignChanges, around, starChanges, mapCursor, KEYS, JUMPS, CONFIG, cleanSettings, visualEnd, jump, grow, countPick, shrink, commandSpans, argSpans, namedSpans, commandNames, icPick, spansFor, unslash, completions, commonPrefix, validName, promptName, delimAt, partner, matchTarget, mayBeDelim, keptArg, dscChanges, cscChanges, wrapChanges, wordAt, lastVisual };
