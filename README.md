@@ -150,6 +150,8 @@ node fuzz.js 5000 # more random notes (a failure prints its seed to replay it)
 node e2e.mjs      # real key presses in a running Obsidian (see the header of e2e.mjs)
 ```
 
+The text objects, jumps and `%` hook into CodeMirror's Vim adapter (`window.CodeMirrorAdapter.Vim`), and with Vim Motions into its surround and config reload. Obsidian has no public API for Vim keys, so this is the only way in. Every patch is undone when the plugin is disabled.
+
 ## License
 
 [MIT](LICENSE)
