@@ -143,7 +143,7 @@ try {
       assert.deepStrictEqual([d2.here, d2.there], [d1.there, d1.here], "partner does not lead back");
       stats.picks++;
     }
-    for (const obj of ["math", "env", "paren", "brace", "square"]) {
+    for (const obj of ["math", "env", "paren", "brace", "square", "cell", "row"]) {
       current = `doc ${d} ${obj} ${JSON.stringify(src)}`;
       const spans = C.SPANS[obj](lines);
       stats.spans += spans.length;
@@ -151,6 +151,10 @@ try {
       // structure: ordered positions inside the doc, delimiters are what they claim to be
       for (const s of spans) {
         for (const p of [s.a, s.ae, s.bs, s.b]) assert(within(lines, p), "position outside the doc");
+        if (obj === "cell" || obj === "row") { // no delimiters: [a, b) is the text and what follows it
+          assert(cmp(s.a, s.ae) <= 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) <= 0, "span out of order");
+          continue;
+        }
         assert(cmp(s.a, s.ae) < 0 && cmp(s.ae, s.bs) <= 0 && cmp(s.bs, s.b) < 0, "span out of order");
         const open = text(lines, s.a, s.ae), close = text(lines, s.bs, s.b);
         if (obj === "math") {
@@ -214,7 +218,8 @@ try {
       }
 
       // 3inB / 3ilB: brute force — hop count times to the closest span past the one counted
-      // (starting at / ending before its edge, so nested ones are skipped); count 1 = pick
+      // (starting at / ending before its edge, so nested ones are skipped; an empty cell is
+      // counted once); count 1 = pick
       for (let l = 0; l < lines.length; l++) for (let ch = 0; ch <= lines[l].length; ch += 3) {
         const pos = at(l, ch);
         for (const which of ["next", "last"]) for (let count = 1; count <= 3; count++) {
@@ -222,7 +227,7 @@ try {
           const fwd = which === "next", near = s => (fwd ? s.a.line - pos.line : pos.line - s.b.line) <= C.CONFIG.seekLines;
           let ref = null;
           for (let k = 0; k < count; k++) {
-            const ok = spans.filter(s => near(s) && (fwd ? cmp(s.a, pos) > 0 && (!ref || cmp(s.a, ref.b) >= 0) : cmp(pos, s.b) >= 0 && (!ref || cmp(s.b, ref.a) <= 0)));
+            const ok = spans.filter(s => near(s) && s !== ref && (fwd ? cmp(s.a, pos) > 0 && (!ref || cmp(s.a, ref.b) >= 0) : cmp(pos, s.b) >= 0 && (!ref || cmp(s.b, ref.a) <= 0)));
             ref = ok.reduce((m, s) => (!m || (fwd ? cmp(s.a, m.a) < 0 : cmp(s.b, m.b) > 0) ? s : m), null);
             if (!ref) break;
           }

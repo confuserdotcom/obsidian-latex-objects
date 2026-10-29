@@ -50,7 +50,7 @@ They are motions: counts, operators (`d]m`) and visual mode work. After a jump, 
 
 - `>,` / `<,` swap the `{ }` argument under the cursor with the next / previous one of its command: `\frac{a}{b}` → `\frac{b}{a}`. On the name, the first argument moves. `[ ]` arguments stay.
 - `>&` / `<&` do the same for the cell under the cursor in its row.
-- The cursor goes along with the moved text; a count moves it further (`2>,`), and `.` repeats. `>>`, `>ap` and the other indents are unchanged.
+- The cursor goes along with the moved text; a count moves it further (`2>,`), and `.` repeats. `>>`, `>ap` and the other indents are unchanged; only `>,` / `<,` (indent to the last `f`/`t` target) are taken over.
 
 ## Matching
 

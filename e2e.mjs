@@ -330,7 +330,9 @@ await t("daR on its own line", "$$\n\\begin{align}\nx \\\\\ny\n\\end{align}\n$$"
 await t(">, swaps \\frac", "$\\frac{a}{b}$", [0, 7], ">,", "$\\frac{b}{a}$");
 await t("<, then . moves it to the front", "$\\f{a}{b}{c}$", [0, 10], "<,.", "$\\f{c}{a}{b}$");
 await t(">& swaps cells", "$\\begin{matrix} a & b \\end{matrix}$", [0, 16], ">&", "$\\begin{matrix} b & a \\end{matrix}$");
-await t(">> << still indent", "x", [0, 0], ">><<", "x");
+// the indent is a tab or spaces, per vault: 0dw takes it whatever it is (and the word, if there were none)
+await t(">> still indents", "x", [0, 0], ">>^iy<Esc>0dw", "yx");
+await t("<< still dedents", "\tx", [0, 1], "<<", "x");
 
 // survives Vim Motions reloads
 await ev(`(async()=>{app.commands.executeCommandById("vim-motions:reload-configuration");await new Promise(r=>setTimeout(r,2000))})()`);

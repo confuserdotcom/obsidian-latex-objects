@@ -288,13 +288,14 @@ function trimmed(lines, p, q) {
 // The rows and cells of every environment that has a & or \\ of its own: not in { }, not in a
 // nested environment, not \&. A \\ takes its [2pt]. Rows: { kind: "row", a, ae, bs, b, cells };
 // cells: { kind: "cell", a, ae, bs, b, row }. [ae, bs) is the trimmed text; [a, b) is what a&
-// / aR take: a cell up to the next cell's text (the last one: from the previous cell's text),
-// a row with its \\ (the last one: from the previous row's text, through that \\).
+// / aR take: a cell up to the next cell's text, a row with its \\. The last one has no
+// separator after it, so a& / aR take from the previous one's text instead (through its & /
+// \\): that start is `ao`, kept apart so the cursor on that separator stays in the one before.
 function tableSpans(lines) {
   const envs = envSpans(lines), rows = [];
   const startAt = new Map(envs.map(n => [n.a.line + ":" + n.a.ch, n]));
   for (const env of envs) {
-    const arg = ARG_ENV.test(env.name) && /^(\[[^\]]*\])?\{[^}]*\}/.exec(lines[env.ae.line].slice(env.ae.ch)), from = arg ? at(env.ae.line, env.ae.ch + arg[0].length) : env.ae;
+    const arg = argOf(lines, env), from = arg ? at(env.ae.line, env.ae.ch + arg[0].length) : env.ae;
     const marks = []; // { amp, p, e }
     let depth = 0, r = from.line, i = from.ch;
     while (cmp(at(r, i), env.bs) < 0) {
@@ -334,11 +335,11 @@ function tableSpans(lines) {
       // a blank cell sits at its place, kept inside the row's text (a blank first cell: at the first &)
       const clamp = p => (cmp(p, ae) < 0 ? ae : cmp(p, bs) > 0 ? bs : p);
       row.cells = g.cells.map(([p, q]) => { const [cae, cbs] = trimmed(lines, p, q).map(clamp); return { kind: "cell", a: cae, ae: cae, bs: cbs, b: cbs, row }; });
-      row.cells.forEach((c, k, cs) => { if (k + 1 < cs.length) c.b = cs[k + 1].ae; else if (k) c.a = cs[k - 1].bs; });
+      row.cells.forEach((c, k, cs) => { if (k + 1 < cs.length) c.b = cs[k + 1].ae; else if (k) c.ao = cs[k - 1].bs; });
       envRows.push(row);
     }
     const lastRow = envRows[envRows.length - 1], prev = envRows[envRows.length - 2];
-    if (prev && lastRow.noSep) lastRow.a = prev.bs;
+    if (prev && lastRow.noSep) lastRow.ao = prev.bs;
     rows.push(...envRows);
   }
   return rows;
@@ -495,6 +496,7 @@ function range(s, lines, inner) {
   const blankAfter = p => !lines[p.line].slice(p.ch).trim();
   const eol = l => at(l, lines[l].length);
   if (!inner) {
+    if (s.ao) s = { ...s, a: s.ao };
     // a row alone on its line(s) with its \\ too: aR is like dd
     if ((s.a.line < s.b.line || s.kind === "row") && blankBefore(s.a) && blankAfter(s.b)) return { start: at(s.a.line, 0), end: eol(s.b.line), linewise: true };
     return { start: s.a, end: s.b };
@@ -552,7 +554,14 @@ function unwrapChanges(lines, s, extraRows = []) {
 // ─── align-type environments ──────────────────────────────────────────────────
 const ALIGNED = /^(align|flalign|eqnarray|split)/;    // & columns, \\ rows
 const ARG_ENV = /^(alignat|alignedat|array|tabular)/; // \begin{…}{arg}
-const argOf = (lines, s) => (ARG_ENV.test(s.name) && /^\{[^}]*\}/.exec(lines[s.ae.line].slice(s.ae.ch))) || null;
+// The {arg} after \begin{…} (with a [t] before it), braces nested: [text] or null.
+function argOf(lines, s) {
+  if (!ARG_ENV.test(s.name)) return null;
+  const line = lines[s.ae.line], o = /^\[[^\]]*\]/.exec(line.slice(s.ae.ch)), i = s.ae.ch + (o ? o[0].length : 0);
+  if (line[i] !== "{") return null;
+  const e = groupEnds(lines, at(s.ae.line, i), at(s.ae.line, line.length)).get(s.ae.line + ":" + i);
+  return e ? [line.slice(s.ae.ch, e.ch)] : null;
+}
 
 // The alignment marks inside s: top-level runs of & (and \\ when `rows`), spaces between
 // them included, as {r, i, j}. Not \&, not the marks of a nested matrix / cases.
@@ -1310,7 +1319,7 @@ function register(opts = OPTS) {
   Vim.defineAction("latexSwap", latexSwap);
   for (const [keys, args] of SWAPS) {
     dropKeys(Vim, keys);
-    Vim.mapCommand(keys, "action", "latexSwap", args, { isEdit: true, context: "normal" });
+    Vim.mapCommand(keys, "action", "latexSwap", args, { isEdit: true }); // no context: unmap only drops context-less ones
   }
   const repeats = opts.jumps && opts.repeatJumps ? REPEATS : [];
   for (const [motion, list] of [["latexObj", [...KEYS, ...ALIASES]], ["latexJump", opts.jumps ? JUMPS : []], ["latexRepeat", [...repeats, ...(opts.jumps ? GO : [])]],
