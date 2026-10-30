@@ -1547,29 +1547,66 @@ class LatexObjects extends Plugin {
   }
 }
 
+// Obsidian 1.13+ draws the settings tab from getSettingDefinitions() and lists every row in its
+// settings search; older versions call display(), which draws the same definitions here.
+function drawSettings(tab, defs, nested) {
+  const el = tab.containerEl;
+  if (!nested) el.empty();
+  for (const d of defs) {
+    if ((typeof d.visible === "function" ? d.visible() : d.visible) === false) continue;
+    if (d.type === "group") {
+      if (d.heading) new Setting(el).setName(d.heading).setHeading();
+      drawSettings(tab, d.items || [], true);
+      continue;
+    }
+    const row = new Setting(el).setName(d.name), c = d.control;
+    if (d.desc) row.setDesc(d.desc);
+    if (d.render) d.render(row);
+    if (!c) continue;
+    const value = tab.getControlValue(c.key) ?? c.defaultValue, ph = c.placeholder || "";
+    const commit = async (v, redraw) => {
+      if (c.validate && c.validate(v)) return;
+      await tab.setControlValue(c.key, v);
+      if (redraw) tab.display(); // the rows that hang on this one show or hide
+    };
+    if (c.type === "toggle") row.addToggle(t => t.setValue(!!value).onChange(v => commit(v, true)));
+    else if (c.type === "dropdown") row.addDropdown(t => t.addOptions(c.options).setValue(value).onChange(v => commit(v, true)));
+    else if (c.type === "number") row.addText(t => t.setPlaceholder(ph).setValue(String(value ?? "")).onChange(v => {
+      const n = Number(v);
+      if (v.trim() && Number.isFinite(n) && !(n < c.min) && !(n > c.max)) commit(n);
+    }));
+    else row.addText(t => t.setPlaceholder(ph).setValue(value ?? "").onChange(v => commit(v)));
+  }
+}
+
 class LatexObjectsSettings extends PluginSettingTab {
   constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
-  display() {
-    const { containerEl } = this, p = this.plugin, set = async (k, v) => { p.settings[k] = v; await p.saveSettings(); };
-    containerEl.empty();
-    if (!(window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim))
-      containerEl.createEl("p", { text: "Vim mode is off: the text objects need Settings → Editor → Vim key bindings, or the Vim Motions plugin. The commands work without it.", cls: "mod-warning" });
-    new Setting(containerEl).setName("Seek distance").setDesc("How many lines above or below the cursor an object or a command looks for the nearest maths, environment or bracket.")
-      .addText(t => t.setPlaceholder("50").setValue(String(p.settings.seekLines)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("seekLines", n); }));
-    new Setting(containerEl).setName("Jumps").setDesc("]m [m ]M [M ]e [e ]( [( ]{ [{ ]c [c ]a [a jump to the next or previous maths, display maths, environment, parenthesis, brace, command or argument; ]C [C to a command by name.")
-      .addToggle(t => t.setValue(p.settings.jumps).onChange(v => { set("jumps", v); this.display(); }));
-    if (p.settings.jumps) new Setting(containerEl).setName("Repeat jumps with ; and ,").setDesc("After a jump, ; repeats it and , goes the other way, until the next f F t T.")
-      .addToggle(t => t.setValue(p.settings.repeatJumps).onChange(v => set("repeatJumps", v)));
-    new Setting(containerEl).setName("Surround").setDesc("ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right; dsc deletes the nearest command and keeps its argument, csc renames it. Needs the Vim Motions plugin.")
-      .addToggle(t => t.setValue(p.settings.surround).onChange(v => set("surround", v)));
-    new Setting(containerEl).setName("Match with %").setDesc("% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.")
-      .addToggle(t => t.setValue(p.settings.match).onChange(v => set("match", v)));
-    new Setting(containerEl).setName("Highlight matching delimiter").setDesc("With the cursor on \\begin{…} \\end{…}, \\left \\right or $ / $$, mark it and its partner.")
-      .addToggle(t => t.setValue(p.settings.highlight).onChange(v => set("highlight", v)));
-    new Setting(containerEl).setName("Flash").setDesc("Highlight what y, >, gU … acted on for a moment.")
-      .addToggle(t => t.setValue(p.settings.flash).onChange(v => { set("flash", v); this.display(); }));
-    if (p.settings.flash) new Setting(containerEl).setName("Flash duration").setDesc("In milliseconds.")
-      .addText(t => t.setPlaceholder("250").setValue(String(p.settings.flashMs)).onChange(v => { const n = parseInt(v, 10); if (Number.isFinite(n)) set("flashMs", n); }));
+  getControlValue(key) { return this.plugin.settings[key]; }
+  async setControlValue(key, value) { this.plugin.settings[key] = value; await this.plugin.saveSettings(); }
+  display() { drawSettings(this, this.getSettingDefinitions()); }
+
+  getSettingDefinitions() {
+    const p = this.plugin;
+    return [
+      { name: "Vim mode is off", desc: "The text objects need Settings → Editor → Vim key bindings, or the Vim Motions plugin. The commands work without it.",
+        visible: () => !(window.CodeMirrorAdapter && window.CodeMirrorAdapter.Vim), render: row => row.settingEl.addClass("mod-warning") },
+      { name: "Seek distance", desc: "How many lines above or below the cursor an object or a command looks for the nearest maths, environment or bracket.",
+        control: { type: "number", key: "seekLines", placeholder: "50", min: 1, max: 1000 } },
+      { name: "Jumps", desc: "]m [m ]M [M ]e [e ]( [( ]{ [{ ]c [c ]a [a jump to the next or previous maths, display maths, environment, parenthesis, brace, command or argument; ]C [C to a command by name.",
+        control: { type: "toggle", key: "jumps" } },
+      { name: "Repeat jumps with ; and ,", desc: "After a jump, ; repeats it and , goes the other way, until the next f F t T.",
+        visible: () => p.settings.jumps, control: { type: "toggle", key: "repeatJumps" } },
+      { name: "Surround", desc: "ds and cs on b B r ( ) { } [ ] seek the nearest bracket and know \\left \\right; dsc deletes the nearest command and keeps its argument, csc renames it. Needs the Vim Motions plugin.",
+        control: { type: "toggle", key: "surround" } },
+      { name: "Match with %", desc: "% on \\begin{…} \\end{…}, \\left \\right or $ / $$ goes to its partner. Anywhere else, or after a count, % stays Vim's.",
+        control: { type: "toggle", key: "match" } },
+      { name: "Highlight matching delimiter", desc: "With the cursor on \\begin{…} \\end{…}, \\left \\right or $ / $$, mark it and its partner.",
+        control: { type: "toggle", key: "highlight" } },
+      { name: "Flash", desc: "Highlight what y, >, gU … acted on for a moment.",
+        control: { type: "toggle", key: "flash" } },
+      { name: "Flash duration", desc: "In milliseconds.",
+        visible: () => p.settings.flash, control: { type: "number", key: "flashMs", placeholder: "250", min: 0, max: 5000 } },
+    ];
   }
 }
 
