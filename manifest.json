@@ -6,5 +6,6 @@
   "description": "Vim text objects, jumps and editing commands for LaTeX maths, environments, brackets and commands.",
   "author": "confuserdotcom",
   "authorUrl": "https://github.com/confuserdotcom",
+  "fundingUrl": "https://confuserdotcom.lemonsqueezy.com",
   "isDesktopOnly": false
 }

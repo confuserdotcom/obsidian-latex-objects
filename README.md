@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/banner.svg" alt="LaTeX Objects: Vim text objects, jumps and edits for LaTeX in Obsidian" width="100%">
-</p>
+<img src="docs/readme/hero.svg" width="100%" alt="LaTeX Objects for Obsidian: an animated editor plays ci& changing a matrix cell, da^ deleting an exponent, &gt;, swapping a fraction's arguments, dim reaching maths from the line above, ]e jumping between environments and dsb dropping a \left( \right) pair.">
 
 <p align="center">
   <b>Edit LaTeX in Obsidian the Vim way.</b><br>
@@ -28,7 +26,11 @@
   <a href="#install">Install</a>
 </p>
 
-![LaTeX Objects demo in Obsidian](docs/demo.gif)
+<details open>
+<summary><b>See it in a real vault</b> (recorded in Obsidian)</summary>
+<br>
+<p align="center"><img src="docs/demo.gif" alt="LaTeX Objects demo recorded in Obsidian" width="100%"></p>
+</details>
 
 ## At a glance
 
@@ -54,6 +56,8 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 
 ## Text objects
 
+<img src="docs/readme/objects.svg" width="100%" alt="Text objects in action: dim seeks the nearest maths, vie im grows a visual selection outwards, ciB changes inside braces, daR deletes an align row, ci_ changes a subscript and cinm changes the next maths from anywhere on the line.">
+
 | Keys | Object |
 | --- | --- |
 | `im` `am` | maths: `$…$` or `$$…$$` |
@@ -76,6 +80,8 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 - `y`, `>`, `gU` … flash what they acted on for a moment, so you can see where a seek went.
 
 ## Jumps
+
+<img src="docs/readme/jumps.svg" width="100%" alt="Jumps, matching and swap in action: ]e between environments, ]a from argument to argument, ]C to a command by name, % between \begin and \end, &gt;, swapping a fraction's arguments and 2&gt;&amp; moving a matrix cell along its row.">
 
 | Keys | Jump to the next / previous |
 | --- | --- |
@@ -103,6 +109,8 @@ They are motions: counts, operators (`d]m`) and visual mode work. After a jump, 
 While the cursor is on one of these delimiters, it and its partner are highlighted.
 
 ## Surround (with Vim Motions)
+
+<img src="docs/readme/surround.svg" width="100%" alt="Surround and commands in action: dsb, csbB, dsc and csc on brackets and commands, then leader mappings that toggle inline and display maths, turn maths into align and star an environment.">
 
 `ds` and `cs` on `b B r ( ) { } [ ]` seek the nearest bracket like `ib`, and know `\left \right`:
 
@@ -211,10 +219,20 @@ The text objects, jumps and `%` hook into CodeMirror's Vim adapter (`window.Code
 
 [MIT](LICENSE)
 
+## Star history
+
+<a href="https://star-history.com/#confuserdotcom/obsidian-latex-objects&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=confuserdotcom/obsidian-latex-objects&type=Date&theme=dark">
+    <img src="https://api.star-history.com/svg?repos=confuserdotcom/obsidian-latex-objects&type=Date" alt="Star history" width="100%">
+  </picture>
+</a>
+
 ---
 
 <p align="center">
   <img src="docs/logo.svg" alt="" width="56"><br>
   If LaTeX Objects saves you keystrokes, <a href="https://github.com/confuserdotcom/obsidian-latex-objects">a ⭐ on GitHub</a> helps other Obsidian users find it.<br>
+  Want to support it? <a href="https://confuserdotcom.lemonsqueezy.com">Support the plugin</a>.<br>
   Bugs and ideas: <a href="https://github.com/confuserdotcom/obsidian-latex-objects/issues">open an issue</a>.
 </p>
