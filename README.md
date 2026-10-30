@@ -1,8 +1,52 @@
-# LaTeX Objects
+<p align="center">
+  <img src="docs/banner.svg" alt="LaTeX Objects: Vim text objects, jumps and edits for LaTeX in Obsidian" width="100%">
+</p>
 
-Vim text objects, jumps and editing commands for LaTeX in [Obsidian](https://obsidian.md): maths (`$…$`, `$$…$$`), environments (`\begin{…} … \end{…}`) and brackets (`( )`, `{ }`, `[ ]`, `\left( \right)`, `\{ \}`), and commands (`\frac{a}{b}`, `\sqrt[n]{x}`).
+<p align="center">
+  <b>Edit LaTeX in Obsidian the Vim way.</b><br>
+  Change a matrix cell, delete an exponent, jump to the next environment or swap a fraction's arguments, in a few keystrokes.
+</p>
+
+<p align="center">
+  <a href="https://community.obsidian.md/plugins/latex-objects"><img src="https://img.shields.io/badge/Install_in-Obsidian-7c3aed?style=for-the-badge&logo=obsidian&logoColor=white" alt="Install in Obsidian"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/confuserdotcom/obsidian-latex-objects/releases/latest"><img src="https://img.shields.io/github/v/release/confuserdotcom/obsidian-latex-objects?style=flat-square&color=7c3aed&label=release" alt="Latest release"></a>
+  <a href="https://github.com/confuserdotcom/obsidian-latex-objects/releases"><img src="https://img.shields.io/github/downloads/confuserdotcom/obsidian-latex-objects/total?style=flat-square&color=7c3aed" alt="Downloads"></a>
+  <a href="https://github.com/confuserdotcom/obsidian-latex-objects/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/confuserdotcom/obsidian-latex-objects/test.yml?branch=main&style=flat-square&label=tests" alt="Tests"></a>
+  <a href="https://github.com/confuserdotcom/obsidian-latex-objects/stargazers"><img src="https://img.shields.io/github/stars/confuserdotcom/obsidian-latex-objects?style=flat-square&color=7c3aed" alt="Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/confuserdotcom/obsidian-latex-objects?style=flat-square&color=7c3aed" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="#text-objects">Text objects</a> ·
+  <a href="#jumps">Jumps</a> ·
+  <a href="#swap">Swap</a> ·
+  <a href="#surround-with-vim-motions">Surround</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#install">Install</a>
+</p>
 
 ![LaTeX Objects demo in Obsidian](docs/demo.gif)
+
+## At a glance
+
+| You type | On | You get |
+| --- | --- | --- |
+| `ci&c` then Esc | `\begin{pmatrix} a & b \end{pmatrix}` (cursor on `b`) | `\begin{pmatrix} a & c \end{pmatrix}` |
+| `da^` | `x^{n+1}` | `x` |
+| `>,` | `\frac{a}{b}` | `\frac{b}{a}` |
+| `dsb` | `\left( x \right)` | `x` |
+| `csbB` | `\left( x \right)` | `\left\{ x \right\}` |
+| `dim` | the line **before** `$$ … $$` | the maths emptied: objects seek the nearest one |
+| `]e` `[e` | anywhere | the next / previous `\begin{…}` |
+
+- **Knows LaTeX:** maths, environments matched by name, `\left \right` pairs, commands and their arguments, sub/superscripts, the cells and rows of `align` and `matrix`.
+- **Knows Vim:** every operator (`d c y > gU …`), visual mode, counts and `.` repeat; each command is one undo step.
+- **Works where you write:** Obsidian's built-in Vim or [Vim Motions](https://github.com/saberzero1/obsidian-vim-motions), callouts and blockquotes, desktop and mobile.
+
+## How it works
 
 They work with every operator (`d c y > gU …`), in visual mode, with counts and with `.` repeat. Every object **seeks**: it takes the one around the cursor, or else the closest one above or below. So `dim` works even when the cursor is on the line before the maths.
 
@@ -144,10 +188,11 @@ nmap <Space>lm :unwrapmath<CR>
 
 ## Install
 
-Until it is in the community plugins list, either:
+In Obsidian: **Settings → Community plugins → Browse**, search for **LaTeX Objects**, then install and enable it. Or open its page in the [community directory](https://community.obsidian.md/plugins/latex-objects) and select **Add to Obsidian**.
 
-- use [BRAT](https://github.com/TfTHacker/obsidian42-brat): add `confuserdotcom/obsidian-latex-objects`, or
-- download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/confuserdotcom/obsidian-latex-objects/releases/latest) into `<vault>/.obsidian/plugins/latex-objects/`, then enable **LaTeX Objects** in Settings → Community plugins.
+Then turn on Vim mode (**Settings → Editor → Vim key bindings**) or install [Vim Motions](https://github.com/saberzero1/obsidian-vim-motions).
+
+Beta versions: add `confuserdotcom/obsidian-latex-objects` to [BRAT](https://github.com/TfTHacker/obsidian42-brat). By hand: download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/confuserdotcom/obsidian-latex-objects/releases/latest) into `<vault>/.obsidian/plugins/latex-objects/`.
 
 ## Development
 
@@ -165,3 +210,11 @@ The text objects, jumps and `%` hook into CodeMirror's Vim adapter (`window.Code
 ## License
 
 [MIT](LICENSE)
+
+---
+
+<p align="center">
+  <img src="docs/logo.svg" alt="" width="56"><br>
+  If LaTeX Objects saves you keystrokes, <a href="https://github.com/confuserdotcom/obsidian-latex-objects">a ⭐ on GitHub</a> helps other Obsidian users find it.<br>
+  Bugs and ideas: <a href="https://github.com/confuserdotcom/obsidian-latex-objects/issues">open an issue</a>.
+</p>
