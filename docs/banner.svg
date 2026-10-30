@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="300" viewBox="0 0 960 300">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1036"/>
+      <stop offset="0.6" stop-color="#2e1065"/>
+      <stop offset="1" stop-color="#5b21b6"/>
+    </linearGradient>
+    <linearGradient id="logo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c1d95"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="sel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c4b5fd" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0.25"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.85" cy="0.1" r="0.7">
+      <stop offset="0" stop-color="#a78bfa" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="960" height="300" rx="24" fill="url(#bg)"/>
+  <rect width="960" height="300" rx="24" fill="url(#glow)"/>
+
+  <!-- faint maths in the background -->
+  <g font-family="'Latin Modern Math', 'STIX Two Math', 'Cambria Math', 'Times New Roman', serif" font-style="italic" fill="#ffffff" fill-opacity="0.06">
+    <text x="610" y="70" font-size="40">∫ f(x) dx</text>
+    <text x="760" y="268" font-size="44">∑ aₙ</text>
+    <text x="520" y="285" font-size="30">√(a² + b²)</text>
+  </g>
+
+  <!-- logo -->
+  <g transform="translate(56 58) scale(0.72)">
+    <rect width="256" height="256" rx="58" fill="url(#logo)"/>
+    <rect x="80" y="78" width="96" height="100" rx="12" fill="url(#sel)"/>
+    <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-weight="700" fill="#ede9fe">
+      <text x="30" y="176" font-size="148">{</text>
+      <text x="168" y="176" font-size="148">}</text>
+    </g>
+    <g font-family="'Latin Modern Math', 'STIX Two Math', 'Cambria Math', 'Times New Roman', serif" font-style="italic" fill="#ffffff">
+      <text x="94" y="158" font-size="82">x</text>
+      <text x="136" y="118" font-size="44">n</text>
+    </g>
+    <rect x="156" y="132" width="12" height="32" rx="2" fill="#f5d0fe"/>
+  </g>
+
+  <!-- title -->
+  <text x="276" y="128" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="58" font-weight="800" fill="#ffffff">LaTeX Objects</text>
+  <text x="278" y="168" font-family="-apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#ddd6fe">Vim text objects, jumps and edits for LaTeX in Obsidian</text>
+
+  <!-- key chips -->
+  <g font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="20" font-weight="600">
+    <g transform="translate(278 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">dim</text></g>
+    <g transform="translate(360 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">cie</text></g>
+    <g transform="translate(442 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">ci&amp;</text></g>
+    <g transform="translate(524 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">da^</text></g>
+    <g transform="translate(606 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">&gt;,</text></g>
+    <g transform="translate(688 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">]e</text></g>
+    <g transform="translate(770 196)"><rect width="70" height="40" rx="10" fill="#ffffff" fill-opacity="0.1" stroke="#c4b5fd" stroke-opacity="0.5"/><text x="35" y="27" text-anchor="middle" fill="#f5f3ff">%</text></g>
+  </g>
+</svg>
