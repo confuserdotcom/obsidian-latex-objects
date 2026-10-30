@@ -1,4 +1,4 @@
-<img src="docs/readme/hero.svg" width="100%" alt="LaTeX Objects for Obsidian: an animated editor plays ci& changing a matrix cell, da^ deleting an exponent, &gt;, swapping a fraction's arguments, dim reaching maths from the line above, ]e jumping between environments and dsb dropping a \left( \right) pair.">
+<img src="docs/readme/demo.webp" width="100%" alt="LaTeX Objects recorded in Obsidian: dim deletes the maths around the cursor, a visual selection grows from brackets to the environment to the maths, ciB changes inside braces, and ]m jumps between formulas.">
 
 <p align="center">
   <b>Edit LaTeX in Obsidian the Vim way.</b><br>
@@ -26,11 +26,7 @@
   <a href="#install">Install</a>
 </p>
 
-<details open>
-<summary><b>See it in a real vault</b> (recorded in Obsidian)</summary>
-<br>
-<p align="center"><img src="docs/demo.gif" alt="LaTeX Objects demo recorded in Obsidian" width="100%"></p>
-</details>
+<p align="center">▶ <a href="docs/readme/demo.mp4"><b>Watch the full-quality video</b></a></p>
 
 ## At a glance
 
@@ -56,7 +52,7 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 
 ## Text objects
 
-<img src="docs/readme/objects.svg" width="100%" alt="Text objects in action: dim seeks the nearest maths, vie im grows a visual selection outwards, ciB changes inside braces, daR deletes an align row, ci_ changes a subscript and cinm changes the next maths from anywhere on the line.">
+<img src="docs/readme/objects.webp" width="100%" alt="Text objects recorded in Obsidian: dim from outside the maths, a selection growing from brackets to environment to maths, and ciB inside a \frac.">
 
 | Keys | Object |
 | --- | --- |
@@ -81,7 +77,7 @@ Requires Vim mode: Obsidian's built-in **Settings → Editor → Vim key binding
 
 ## Jumps
 
-<img src="docs/readme/jumps.svg" width="100%" alt="Jumps, matching and swap in action: ]e between environments, ]a from argument to argument, ]C to a command by name, % between \begin and \end, &gt;, swapping a fraction's arguments and 2&gt;&amp; moving a matrix cell along its row.">
+<img src="docs/readme/jumps.webp" width="100%" alt="]m jumping from formula to formula in Obsidian, with ; and , repeating the jump.">
 
 | Keys | Jump to the next / previous |
 | --- | --- |
@@ -109,8 +105,6 @@ They are motions: counts, operators (`d]m`) and visual mode work. After a jump, 
 While the cursor is on one of these delimiters, it and its partner are highlighted.
 
 ## Surround (with Vim Motions)
-
-<img src="docs/readme/surround.svg" width="100%" alt="Surround and commands in action: dsb, csbB, dsc and csc on brackets and commands, then leader mappings that toggle inline and display maths, turn maths into align and star an environment.">
 
 `ds` and `cs` on `b B r ( ) { } [ ]` seek the nearest bracket like `ib`, and know `\left \right`:
 
